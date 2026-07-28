@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#12161c">
+<title>呼称マトリクス</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="bar">
+  <div class="ttl">呼称表</div>
+  <button class="rl" id="reload" title="シートから読み直す">↻</button>
+  <div class="search">
+    <input id="q" type="search" placeholder="呼称を検索" autocomplete="off" enterkeyhint="search">
+    <span class="n" id="qn"></span>
+    <button class="x" id="qx" aria-label="消す" hidden>✕</button>
+  </div>
+</div>
+
+<div class="strip" id="strip">
+  <span class="cav">▶</span>
+  <span class="sum" id="sum">読み込み中…</span>
+  <span class="wdot" id="warnDot" hidden>⚠</span>
+  <span class="dim" id="dim"></span>
+</div>
+
+<div class="panel" id="panel">
+  <div class="frow" id="warn" style="display:none"></div>
+  <div class="frow">
+    <span class="flab">表示</span>
+    <button class="chip act" id="bAll">全キャラ表示</button>
+    <button class="chip act" id="bNone">全解除</button>
+    <button class="chip act" id="bReset">絞り込みリセット</button>
+    <button class="chip act" id="bAuto">空の行列を隠す</button>
+    <button class="chip act" id="bMode">除外を薄く</button>
+    <button class="chip act" id="bClip">5行で切る</button>
+    <button class="chip act" id="bCW">列幅 標準</button>
+    <button class="chip act" id="bShort">見出し 略称</button>
+  </div>
+  <div class="frow" id="rProj"><span class="flab">プロジェクト</span></div>
+  <div class="frow" id="rGen"><span class="flab">期生</span></div>
+  <div class="frow" id="rChar"><span class="flab">キャラ</span></div>
+  <div class="frow">
+    <span class="flab">セル</span>
+    <button class="chip mini" data-cell="unsure">未確認 ※</button>
+    <button class="chip mini" data-cell="na">不成立</button>
+    <button class="chip mini" data-cell="omitted">省略</button>
+  </div>
+  <div class="frow">
+    <span class="flab">呼称</span>
+    <button class="chip mini" data-flag="main">基本 ◎</button>
+    <button class="chip mini" data-flag="rare">稀 *</button>
+    <button class="chip mini" data-flag="third">三人称 +</button>
+    <button class="chip mini" data-flag="egosa">エゴサ ☆</button>
+    <button class="chip mini" data-flag="retired">使用終了 ←</button>
+  </div>
+  <div id="rAxes"></div>
+  <div class="frow"><span class="flab"></span><span class="hint">チップは タップごとに
+    <b>限定</b> → <s>除外</s> → 解除 と切り替わります</span></div>
+</div>
+<div class="grip" id="grip" role="separator" aria-label="パネルの高さを変える"></div>
+
+<div class="shell">
+  <div class="scroll" id="scroll"></div>
+  <div class="msg" id="msg">読み込み中…</div>
+</div>
+
+<div class="sheet" id="sheet">
+  <div class="sh-h">
+    <span class="a" id="shA"></span><span class="ar">→</span><span class="a" id="shB"></span>
+    <button class="x" id="shX" aria-label="閉じる">✕</button>
+  </div>
+  <div id="shBody"></div>
+</div>
+
+<style id="filter"></style>
+<script src="app.js"></script>
+</body>
+</html>

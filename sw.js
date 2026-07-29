@@ -1,7 +1,8 @@
 // 呼称マトリクス
 // アプリ本体を更新したら CACHE の版番号を上げること。
-const CACHE = "kosho-v2";
-const ASSETS = ["./", "./index.html", "./manifest.webmanifest", "./data.json"];
+const CACHE = "kosho-v3";
+const ASSETS = ["./", "./index.html", "./app.js", "./style.css",
+                "./manifest.webmanifest", "./icon-192.png", "./icon-512.png"];
 
 self.addEventListener("install", e => {
   e.waitUntil(caches.open(CACHE)

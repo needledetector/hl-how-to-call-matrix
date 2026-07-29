@@ -64,12 +64,13 @@ button{font:inherit}
 .chip[data-s=part]{background:var(--accent-soft);border-color:var(--accent);color:var(--accent);font-weight:700}
 .chip.mini{padding:3px 7px;font-size:10.5px;border-radius:5px}
 .chip.act{border-color:var(--ink-3);color:var(--ink-2);border-radius:6px}
-.chip.off{text-decoration:line-through;opacity:.55}
+.chip.off{opacity:.55}
 .sum-chip{display:inline-flex;align-items:center;gap:4px;padding:2px 6px;margin:0 1px;
   border:1px solid var(--line);border-radius:999px;background:var(--surface);
   color:var(--accent);font-weight:700;cursor:pointer;white-space:nowrap}
 .sum-chip:hover{background:var(--accent-soft)}
 .sum-chip .x{font-size:10px;opacity:.8;line-height:1}
+.sum-more{color:var(--ink-3);font-weight:400}
 .hint{font-size:10px;color:var(--ink-3);padding-top:4px;line-height:1.6}
 .hint b{color:var(--accent)} .hint s{opacity:.7}
 details.more>summary{padding:7px 10px;font-size:9.5px;letter-spacing:.1em;color:var(--ink-3);

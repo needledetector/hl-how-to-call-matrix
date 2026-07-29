@@ -110,7 +110,7 @@ td.sel{outline:2px solid var(--accent);outline-offset:-2px;position:relative;z-i
 .mk-main{color:var(--m-main)} .mk-rare{color:var(--m-rare)}
 .mk-third{color:var(--m-third)} .mk-egosa{color:var(--m-egosa)}
 .tk .nt{color:var(--ink-3)}
-.tk.rt{color:var(--ink-3);text-decoration:line-through;text-decoration-color:var(--line)}
+.tk.rt{color:var(--ink-3)}
 .bd{color:var(--accent);opacity:.5;font-weight:700;margin:0 2px}
 .st{font-size:10px;color:var(--ink-3);font-style:normal}
 .st.u{color:#b03b52}
@@ -138,5 +138,5 @@ td.sel{outline:2px solid var(--accent);outline-offset:-2px;position:relative;z-i
 .flag.main{background:var(--accent-soft);color:var(--m-main);font-weight:700}
 .flag.egosa{background:#f7e4f0;color:var(--m-egosa);font-weight:700}
 .flag.retired{background:#e8eaee;color:var(--ink-3)}
-.tok.rt .l{color:var(--ink-3);text-decoration:line-through;text-decoration-color:var(--line)}
+.tok.rt .l{color:var(--ink-3)}
 .sh-e{padding:16px 14px;color:var(--ink-3);font-size:12px;line-height:1.7}

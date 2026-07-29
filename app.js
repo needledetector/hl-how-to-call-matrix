@@ -11,7 +11,7 @@ const normH = s => toHira(norm(s));
 const hasHira = s => /[\u3041-\u3096]/.test(s);
 
 const CW = {narrow:112, normal:132, wide:176};
-const STATE_LABEL = {unsure:"※ 未確認", na:"—", omitted:"(省略)"};
+const STATE_LABEL = {unsure:"※ 未確認", na:"離籍・未デビュー", omitted:"省略"};
 const FLAG_LABEL = {main:"基本", rare:"稀", third:"三人称", egosa:"エゴサワード",
                     retired:"使用終了"};
 const FLAG_MARK  = {main:"◎", rare:"*", third:"+", egosa:"☆"};   // Symbols are not supposed to be displayed for retired
@@ -64,24 +64,20 @@ function splitOutside(s, sep){
 }
 
 /* Determine the state by checking all cells */
+/* Parentheses at the beginning of a cell indicate a "note on relationships." Sometimes a specific title or way of addressing follows.
+   Example: (Already departed at time of debut) Chairman Senpai+ ... Mentioning them in the third person is possible even after they have left. */
 function cellState(raw){
   const s = raw.trim();
-  if (s === "※") return ["unsure", null];
-  if (/^[（(]/.test(s) && /[）)]$/.test(s)){
-    // Check if the entire string is wrapped in a single set of parentheses (i.e., it doesn't close prematurely)
-    let d = 0, single = true;
-    for (let i = 0; i < s.length; i++){
-      const c = s[i];
-      if ("（(".includes(c)) d++;
-      else if ("）)".includes(c)){ d--; if (d === 0 && i !== s.length - 1){ single = false; break; } }
-    }
-    if (single && d === 0){
-      const inner = s.slice(1, -1).trim().replace(/^[「『]/, "").replace(/[」』]$/, "");
-      if (inner === "省略") return ["omitted", inner];
-      if (NA_SET.has(inner) || /離籍|未デビュー|卒業/.test(inner)) return ["na", inner];
-    }
+  if (s === "※") return {state:"unsure", reason:null, rest:""};
+  const m = s.match(/^[（(]([^）)]*)[）)]\s*/);
+  if (m){
+    const inner = m[1].trim().replace(/^[「『]/, "").replace(/[」』]$/, "");
+    const rest = s.slice(m[0].length).trim();
+    if (inner === "省略") return {state:"omitted", reason:inner, rest};
+    if (NA_SET.has(inner) || /離籍|未デビュー|卒業/.test(inner))
+      return {state:"na", reason:inner, rest};
   }
-  return ["has", null];
+  return {state:null, reason:null, rest:s};
 }
 
 function parseAppellation(part, flags){
@@ -215,15 +211,11 @@ function build(mRows, auxRows, axisRows, warn0){
       if (!raw.trim()) continue;
       const f = chars[i].id, t = (chars[j] || {}).id;
       if (t === undefined) continue;
-      const [state, reason] = cellState(raw);
-      if (state !== "has"){
-        const c = {f, t, s: state};
-        if (reason) c.r = reason;
-        cells.push(c);
-        continue;
-      }
+      const st = cellState(raw);
+      const cell = {f, t};
+      if (st.state){ cell.s = st.state; if (st.reason) cell.r = st.reason; }
       const apps = [];
-      for (const tok of parseCell(raw)){
+      for (const tok of (st.rest ? parseCell(st.rest) : [])){
         const ax = {};
         for (const tag of tok.tags){
           const hit = axes[tag];
@@ -237,7 +229,8 @@ function build(mRows, auxRows, axisRows, warn0){
         if (tok.times.length) a.src = tok.times;
         apps.push(a);
       }
-      if (apps.length) cells.push({f, t, a: apps});
+      if (apps.length) cell.a = apps;
+      if (cell.s || cell.a) cells.push(cell);
     }
   });
   if (!Object.keys(axes).length && !warn.some(w => w.indexOf("軸マッピング") >= 0))
@@ -370,9 +363,11 @@ function tokenHTML(a){
 function cellHTML(f, t){
   const c = cellMap.get(f + ":" + t);
   if (!c) return "";
-  if (c.s) return '<i class="st' + (c.s === "unsure" ? " u" : "") + '">' +
-    esc(c.s === "na" && c.r ? "— " + c.r : STATE_LABEL[c.s]) + "</i>";
-  let seen = false, out = "";
+  let out = "";
+  if (c.s) out += '<i class="st ' + c.s + (c.s === "unsure" ? " u" : "") + '">' +
+    esc(c.s === "unsure" ? STATE_LABEL.unsure : (c.r || STATE_LABEL[c.s])) + "</i>";
+  if (!c.a) return out;
+  let seen = false;
   for (const a of c.a){
     const rt = (a.g || []).includes("retired");
     if (rt && !seen){ out += '<span class="bd">←</span>'; seen = true; }
@@ -491,13 +486,12 @@ function makeMatcher(q, hira){
   // * Cells marked with "※" or those that are invalid do not have a designation, so they are considered empty when filtering by designation.
   const tokenFilterOn = hasOnly || notF.length > 0 || notX.length > 0 || !!q;
   const cellOK = c => {
-    if (c.s){
-      if (cellNot.includes(c.s)) return false;
-      if (cellOnly.length) return cellOnly.includes(c.s);
-      return !tokenFilterOn;
-    }
-    if (cellOnly.length) return false; // Exclude normal cells if the state is limited.
-    return (c.a || []).some(tokenOK);
+    const apps = c.a || [];
+    // State restriction is applied on a per-cell basis. Even if there are notes, if a designation exists, proceed to the designation-side evaluation.
+    if (cellOnly.length && !(c.s && cellOnly.includes(c.s))) return false;
+    if (c.s && cellNot.includes(c.s) && !apps.length) return false;
+    if (apps.length) return apps.some(tokenOK);
+    return !!c.s && !tokenFilterOn;
   };
   return {tokenOK, cellOK, cellOnly, cellNot, onlyF, notF, onlyX, notX};
 }
@@ -707,17 +701,18 @@ function openSheet(f, t){
   $("#shB").textContent = f === t ? "自分（一人称）" : (to.emoji ? to.emoji + " " : "") + to.name;
   const c = cellMap.get(f + ":" + t);
   const body = $("#shBody");
+  const note = (c && c.s)
+    ? (c.s === "unsure"
+        ? '<div class="sh-e"><b>未確認</b><br>調べたが見つからなかった呼称です。<br>' +
+          "一度も呼んでいないことが確定したわけではありません。</div>"
+        : '<div class="sh-e"><b>' + esc(c.r || STATE_LABEL[c.s]) + "</b></div>")
+    : "";
   if (!c){
     body.innerHTML = '<div class="sh-e">未調査。<br>この表にまだ記録がありません。</div>';
-  } else if (c.s === "unsure"){
-    body.innerHTML = '<div class="sh-e"><b>未確認</b><br>' +
-      "調べたが見つからなかった呼称です。<br>" +
-      "一度も呼んでいないことが確定したわけではありません。</div>";
-  } else if (c.s){
-    body.innerHTML = '<div class="sh-e"><b>' + (c.s === "omitted" ? "省略" : "呼称が成立しない") +
-      "</b><br>" + esc(c.r || "") + "</div>";
+  } else if (!c.a || !c.a.length){
+    body.innerHTML = note;
   } else {
-    body.innerHTML = c.a.map((a, i) => {
+    body.innerHTML = note + c.a.map((a, i) => {
       const g = a.g || [], rt = g.includes("retired");
       const fl = g.map(k => '<span class="flag ' + k + '">' + FLAG_LABEL[k] + "</span>").join("");
       const sub = [];

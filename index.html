@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
 <meta name="theme-color" content="#12161c">
 <title>呼称マトリクス</title>
 <link rel="manifest" href="manifest.webmanifest">
@@ -12,7 +12,7 @@
 <body>
 <header class="bar">
   <h1 class="ttl">呼称表</h1>
-  <div class="search">
+  <div class="search" id="searchBox">
     <input id="q" type="search" placeholder="呼称を検索" aria-label="呼称を検索" autocomplete="off" enterkeyhint="search">
     <button class="x" id="qx" aria-label="検索をクリア" hidden>✕</button>
   </div>
@@ -37,7 +37,7 @@
 <section class="panel" id="panel" aria-label="絞り込み">
   <div class="panel-heading"><h2>絞り込み</h2><button id="closeFilters" class="text-button" aria-label="絞り込みを閉じる">完了 ✕</button></div>
   <div class="frow" id="warn" style="display:none"></div>
-  <p class="panel-intro">各条件の「限定」「除外」を選べます。呼称・注記の限定は、どれかに一致すれば表示します。</p>
+  <p class="panel-intro">タップごとに 指定なし → 限定 → 除外 と切り替わります。呼称・注記の限定は、どれかに一致すれば表示します。</p>
   <div class="frow" id="rFlags"><span class="flab">呼称</span></div>
   <div class="frow" id="rCells"><span class="flab">記録の状態</span></div>
   <div id="rAxes"></div>
@@ -54,11 +54,14 @@
 
 <section class="settings" id="settings" aria-label="表示設定" hidden>
   <div class="panel-heading"><h2>表示設定</h2><button id="closeSettings" class="text-button" aria-label="表示設定を閉じる">完了 ✕</button></div>
-  <label>表の空行・空列 <select id="bAuto"><option value="off">そのまま表示</option><option value="on">隠す</option></select></label>
-  <label>除外した呼称 <select id="bMode"><option value="hide">隠す</option><option value="dim">薄く残す（表のみ）</option></select></label>
-  <label>セルの行数 <select id="bClip"><option value="5">5行</option><option value="3">3行</option><option value="2">2行</option><option value="0">すべて表示</option></select></label>
-  <label>列幅 <select id="bCW"><option value="narrow">狭い</option><option value="normal">標準</option><option value="wide">広い</option></select></label>
-  <label id="shortSetting">見出し <select id="bShort"><option value="short">略称</option><option value="full">フルネーム</option></select></label>
+  <fieldset class="setting-choice" id="bAuto"><legend>表の空行・空列</legend><div class="radio-options"><label><input type="radio" name="bAuto" value="off"><span>表示</span></label><label><input type="radio" name="bAuto" value="on"><span>隠す</span></label></div></fieldset>
+  <fieldset class="setting-choice" id="bMode"><legend>除外した呼称</legend><div class="radio-options"><label><input type="radio" name="bMode" value="hide"><span>隠す</span></label><label><input type="radio" name="bMode" value="dim"><span>薄く残す（表のみ）</span></label></div></fieldset>
+  <fieldset class="setting-choice" id="bClip"><legend>セルの行数</legend><div class="radio-options"><label><input type="radio" name="bClip" value="5"><span>5行</span></label><label><input type="radio" name="bClip" value="3"><span>3行</span></label><label><input type="radio" name="bClip" value="2"><span>2行</span></label><label><input type="radio" name="bClip" value="0"><span>すべて</span></label></div></fieldset>
+  <fieldset class="setting-choice" id="bCW"><legend>列幅</legend><div class="radio-options"><label><input type="radio" name="bCW" value="narrow"><span>狭い</span></label><label><input type="radio" name="bCW" value="normal"><span>標準</span></label><label><input type="radio" name="bCW" value="wide"><span>広い</span></label></div></fieldset>
+  <fieldset class="setting-choice" id="bShort"><legend>見出し</legend><div class="radio-options"><label><input type="radio" name="bShort" value="short"><span>略称</span></label><label><input type="radio" name="bShort" value="full"><span>フルネーム</span></label></div></fieldset>
+  <fieldset class="zoom-setting"><legend>表の表示サイズ <output id="zoomValue" for="tableZoom">100%</output></legend>
+    <div class="zoom-controls"><button id="zoomOut" aria-label="表を縮小">−</button><input id="tableZoom" type="range" min="60" max="160" step="10" value="100" aria-label="表の表示サイズ"><button id="zoomIn" aria-label="表を拡大">＋</button><button id="zoomReset">100%に戻す</button></div>
+  </fieldset>
 </section>
 
 <div class="active-filters" id="sum" aria-label="現在の条件">読み込み中…</div>

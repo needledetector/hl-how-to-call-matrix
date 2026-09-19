@@ -1,5 +1,5 @@
-// Dependency-free Chromium smoke test. Uses synthetic sheets, never the live spreadsheet.
-// Run: node tests/browser.mjs [path-to-chrome-or-edge]
+// Dependency-free Chromium smoke test. Synthetic sheets by default; --live uses real data.
+// Run: node tests/browser.mjs [path-to-chrome-or-edge] [--live] [--offline] [--url=...]
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
 import {spawn} from 'node:child_process';
@@ -10,7 +10,9 @@ import {fileURLToPath} from 'node:url';
 import {once} from 'node:events';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-const candidates = [process.argv[2], process.env.CHROME_PATH,
+const live = process.argv.includes('--live');
+const pageURL = process.argv.find(arg => arg.startsWith('--url='))?.slice(6);
+const candidates = [process.argv.slice(2).find(arg => !arg.startsWith('--')), process.env.CHROME_PATH,
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
   'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'].filter(Boolean);
 let executable;
@@ -50,10 +52,11 @@ try {
   socket = new WebSocket(targets.find(t => t.type === 'page').webSocketDebuggerUrl);
   await once(socket, 'open');
   let sequence = 0;
-  const pending = new Map(), errors = [];
+  const pending = new Map(), errors = [], failures = [];
   socket.addEventListener('message', event => {
     const message = JSON.parse(event.data);
     if (message.method === 'Runtime.exceptionThrown') errors.push(message.params.exceptionDetails);
+    if (message.method === 'Network.loadingFailed') failures.push(message.params);
     const callback = pending.get(message.id);
     if (callback) {
       pending.delete(message.id);
@@ -81,7 +84,7 @@ try {
     throw new Error('Timed out waiting for ' + expression);
   };
   const click = selector => evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
-  const change = (selector, value) => evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); el.value = ${JSON.stringify(value)}; el.dispatchEvent(new Event('change', {bubbles:true})); })()`);
+  const change = (selector, value) => evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (el.tagName === 'FIELDSET') { [...el.querySelectorAll('input')].find(input => input.value === ${JSON.stringify(value)}).click(); } else { el.value = ${JSON.stringify(value)}; el.dispatchEvent(new Event('change', {bubbles:true})); } })()`);
   const search = async value => {
     await evaluate(`document.querySelector('#q').value = ${JSON.stringify(value)}; document.querySelector('#q').dispatchEvent(new Event('input'))`);
     await new Promise(done => setTimeout(done, 180));
@@ -90,7 +93,36 @@ try {
     const result = await send('Page.captureScreenshot', {format:'png'});
     await writeFile(join(artifacts, name + '.png'), Buffer.from(result.data, 'base64'));
   };
-  await send('Runtime.enable'); await send('Page.enable');
+  await send('Runtime.enable'); await send('Page.enable'); await send('Network.enable');
+  if (live) {
+    await send('Page.navigate', {url:pageURL || origin});
+    try { await waitFor(`document.querySelector('#resultSummary')?.textContent || document.querySelector('#sum')?.textContent === 'エラー'`); } catch (_) {}
+    console.log(JSON.stringify(await evaluate(`({url:location.href, message:document.querySelector('#msg')?.textContent, summary:document.querySelector('#sum')?.textContent, result:document.querySelector('#resultSummary')?.textContent, cells:document.querySelectorAll('#mx td').length})`), null, 2));
+    console.log(JSON.stringify({errors, failures}, null, 2));
+    await screenshot('live');
+    console.log('Screenshots: ' + artifacts);
+    assert.deepEqual(errors, []);
+    assert.ok(await evaluate(`!!document.querySelector('#resultSummary')?.textContent`), 'Live data should render');
+    await evaluate(`navigator.serviceWorker.ready.then(() => true)`);
+    console.log('Sheet cache after first load:', await evaluate(`caches.keys().then(async keys => (await Promise.all(keys.map(async key => (await (await caches.open(key)).keys()).filter(r => r.url.includes('/gviz/tq')).length))).reduce((a,b) => a+b, 0))`));
+    console.log('Dataset snapshot:', await evaluate(`caches.match(new URL('data.snapshot.json', location.href).href).then(hit => !!hit)`));
+    if (process.argv.includes('--offline')) {
+      await send('Network.emulateNetworkConditions', {offline:true, latency:0, downloadThroughput:0, uploadThroughput:0});
+      // Page-level CDP throttling does not cover the worker's separate network target.
+      // Reject sheet requests explicitly so the dataset fallback is exercised too.
+      await send('Page.addScriptToEvaluateOnNewDocument', {source:`{
+        const originalFetch = window.fetch.bind(window);
+        window.fetch = (url, ...args) => String(url).startsWith('https://docs.google.com/')
+          ? Promise.reject(new TypeError('Network unavailable')) : originalFetch(url, ...args);
+      }`});
+    }
+    await evaluate(`document.documentElement.dataset.beforeReload = '1'`);
+    await send('Page.reload');
+    await waitFor(`!document.documentElement.dataset.beforeReload && (document.querySelector('#resultSummary')?.textContent || document.querySelector('#sum')?.textContent === 'エラー')`);
+    console.log('Controlled reload:', await evaluate(`({result:document.querySelector('#resultSummary')?.textContent,message:document.querySelector('#msg')?.textContent})`));
+    assert.ok(await evaluate(`!!document.querySelector('#resultSummary')?.textContent`), 'Reload should render cached data even offline');
+    if (process.argv.includes('--offline')) assert.match(await evaluate(`document.querySelector('#warn').textContent`), /前回取得したデータ/);
+  } else {
   const names = ['青空あおい', '白雪しろ', '紅葉あかね', '若葉みどり', '星野ひかり', '月見ゆう', '花咲はる', '海野なみ'];
   const csv = rows => rows.map(row => row.map(v => '"' + String(v).replaceAll('"', '""') + '"').join(',')).join('\n');
   const matrix = [['凡例', ...names], ...names.map((name, i) => [name, ...names.map((other, j) =>
@@ -113,7 +145,15 @@ try {
   assert.equal(await evaluate(`document.querySelector('#viewList').getAttribute('aria-pressed')`), 'true');
   assert.equal(await evaluate(`document.querySelector('#mx') === null`), true);
   assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true);
+  assert.equal(await evaluate(`(() => { const box = document.querySelector('#searchBox').getBoundingClientRect(); return box.top > innerHeight - 100 && box.bottom <= innerHeight; })()`), true);
+  assert.equal(await evaluate(`document.querySelector('.card-detail').textContent`), '詳細…');
   await screenshot('mobile-list');
+  await evaluate(`document.querySelector('#q').focus()`);
+  await send('Emulation.setDeviceMetricsOverride', {width:390, height:430, deviceScaleFactor:1, mobile:true});
+  await waitFor(`document.querySelector('#searchBox').getBoundingClientRect().bottom <= innerHeight`);
+  await screenshot('mobile-keyboard-layout');
+  await evaluate(`document.querySelector('#q').blur()`);
+  await send('Emulation.setDeviceMetricsOverride', {width:390, height:844, deviceScaleFactor:1, mobile:true});
   await click('#nextPage');
   assert.match(await evaluate(`document.querySelector('#pageInfo').textContent`), /^41/);
   await change('#fromPerson', 'p0');
@@ -135,14 +175,22 @@ try {
   await click('#nextHit');
   assert.equal(await evaluate(`document.querySelectorAll('.search-current').length`), 1);
   await click('#filterToggle');
-  await change('#rFlags .filter-field:last-child select', 'not');
+  await click('#rFlags .filter-chip:last-child');
+  assert.equal(await evaluate(`document.querySelector('#resultSummary').textContent`), '検索結果 7件');
+  await click('#rFlags .filter-chip:last-child');
+  assert.equal(await evaluate(`document.querySelector('#rFlags .filter-chip:last-child').dataset.state`), 'not');
+  await click('#rFlags .filter-chip:last-child');
+  assert.equal(await evaluate(`document.querySelector('#resultSummary').textContent`), '検索結果 21件');
+  await click('#rFlags .filter-chip:last-child');
+  await click('#rFlags .filter-chip:last-child');
   assert.equal(await evaluate(`document.querySelector('#resultSummary').textContent`), '検索結果 14件');
   await screenshot('mobile-filters');
   await change('#fromPerson', 'p0');
   assert.equal(await evaluate(`document.querySelector('#resultSummary').textContent`), '検索結果 2件');
   await click('#filterToggle');
+  await evaluate(`document.documentElement.dataset.beforeReload = '1'`);
   await send('Page.reload');
-  await waitFor(`document.querySelector('#resultSummary')?.textContent === '検索結果 2件'`);
+  await waitFor(`!document.documentElement.dataset.beforeReload && document.querySelector('#resultSummary')?.textContent === '検索結果 2件'`);
   assert.equal(await evaluate(`document.querySelector('#fromPerson').value`), 'p0');
   await search('存在しない呼称');
   assert.equal(await evaluate(`getComputedStyle(document.querySelector('#msg')).display`), 'grid');
@@ -160,6 +208,14 @@ try {
   assert.equal(await evaluate(`document.querySelector('#panel').classList.contains('open')`), false);
   await change('#bCW', 'wide');
   assert.equal(await evaluate(`document.documentElement.style.getPropertyValue('--cw')`), '176px');
+  const normalWidth = await evaluate(`document.querySelector('#mx').getBoundingClientRect().width`);
+  await click('#zoomIn'); await click('#zoomIn');
+  assert.equal(await evaluate(`document.querySelector('#zoomValue').textContent`), '120%');
+  assert.ok(Math.abs(await evaluate(`document.querySelector('#mx').getBoundingClientRect().width`) / normalWidth - 1.2) < 0.01);
+  assert.equal(await evaluate(`JSON.parse(decodeURIComponent(location.hash.slice(1))).z`), 120);
+  await screenshot('desktop-zoom');
+  await click('#zoomReset');
+  assert.equal(await evaluate(`document.querySelector('#zoomValue').textContent`), '100%');
   await change('#bClip', '2');
   await waitFor(`[...document.querySelectorAll('.cell-detail')].some(button => button.textContent === '続きを読む')`);
   // Small phone: neither the body nor the fixed control area should overflow the viewport.
@@ -169,7 +225,7 @@ try {
   assert.equal(await evaluate(`document.querySelector('.shell').getBoundingClientRect().bottom <= innerHeight`), true);
   await screenshot('small-phone');
   assert.equal(await evaluate(`(() => {
-    const control = document.querySelector('#rFlags select').getBoundingClientRect();
+    const control = document.querySelector('#rFlags .filter-chip').getBoundingClientRect();
     return control.top >= 0 && control.bottom <= innerHeight;
   })()`), true);
   await click('#closeFilters');
@@ -182,6 +238,7 @@ try {
   assert.deepEqual(errors, []);
   console.log('Browser checks passed: mobile/desktop layouts, direction selection, pagination, search/filter counts, URL restoration, detail dialog, empty state, settings.');
   console.log('Screenshots: ' + artifacts);
+  }
 } finally {
   socket?.close();
   browser.kill();

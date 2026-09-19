@@ -139,10 +139,6 @@ select{min-height:40px;border:1px solid #b7c2cc;border-radius:7px;background:var
 .panel-intro{font-size:12px;line-height:1.6;color:var(--ink-2);padding:0 18px;margin:12px 0}
 .frow{padding:10px 18px;gap:8px;align-items:center}
 .flab{font-size:11px;letter-spacing:0;width:76px;line-height:1.5;padding:0;color:var(--ink-2)}
-.filter-field{display:flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:8px;padding:4px 4px 4px 10px;background:var(--bg);font-size:12px}
-.filter-field select{min-height:34px;padding-left:6px;font-size:12px;border-color:transparent;background:transparent}
-.filter-field[data-state=only]{background:var(--accent-soft);border-color:var(--accent)}
-.filter-field[data-state=not]{background:#fff2e8;border-color:#ad6536}
 .people-range summary{padding:12px 18px;cursor:pointer;font-size:13px;font-weight:600;min-height:44px;border-top:1px solid var(--line)}
 .people-range summary span{font-weight:400;font-size:12px;color:var(--ink-2)}
 .chip,.chip.mini{min-height:36px;font-size:12px;color:var(--ink-2);padding:6px 10px}
@@ -150,7 +146,6 @@ select{min-height:40px;border:1px solid #b7c2cc;border-radius:7px;background:var
 .chip[data-s=on],.chip[data-s=part]{color:white}
 .chip[data-s=part]{color:var(--accent)}
 .settings{display:flex;flex-wrap:wrap;gap:12px 20px;padding:12px 18px;background:var(--surface);border-bottom:1px solid var(--line);max-height:35vh;overflow:auto;flex:0 1 auto;min-height:0}
-.settings label{display:flex;flex-direction:column;gap:5px;font-size:12px}
 .active-filters{display:flex;align-items:center;gap:8px;flex:none;min-height:34px;max-height:80px;overflow:auto;padding:6px 18px;font-size:12px;white-space:nowrap;border-bottom:1px solid var(--line);background:var(--bg)}
 .people-summary{font-weight:600;color:var(--ink)}
 .range-summary{color:var(--ink-2)}
@@ -200,8 +195,7 @@ td:focus-within{outline:2px solid var(--accent);outline-offset:-2px}
   .search-nav button{min-width:44px;min-height:44px}
   .panel{max-height:var(--ph,32dvh)}.panel-intro{padding:0 12px;font-size:11px}
   .frow{padding:10px 12px;gap:8px}.flab{width:100%;font-size:12px;font-weight:700}
-  .filter-field{flex:1 1 145px;justify-content:space-between;padding-left:8px}.filter-field select{min-height:40px;font-size:16px;width:106px}
-  .chip,.chip.mini{min-height:44px}.settings{padding:12px;max-height:30dvh}.settings label{flex:1 1 140px}.settings select{font-size:16px;min-height:44px}
+  .chip,.chip.mini{min-height:44px}.settings{padding:12px;max-height:30dvh}
   .list-view{padding:12px}.result-card{padding:12px 14px;margin-bottom:10px}.card-detail{min-height:44px}
   .list-tokens{font-size:14px}.result-card h3{font-size:12px}
   .cell-detail{min-height:40px;font-size:11px}.pagination button{min-height:44px}
@@ -227,4 +221,47 @@ td:focus-within{outline:2px solid var(--accent);outline-offset:-2px}
   .shell{min-height:72px}
   .panel,.settings{position:fixed;inset:auto 0 0;z-index:10;max-height:80dvh;box-shadow:0 -8px 32px rgba(16,23,32,.2)}
   .grip.open{display:none}
+}
+
+/* Direct controls: one tap per state change, and visible choices for settings. */
+.filter-chip{display:inline-flex;align-items:center;gap:8px;min-height:40px;border:1px solid var(--line);border-radius:8px;padding:6px 10px;background:var(--surface);color:var(--ink-2);font-size:12px}
+.filter-state{font-size:10px;white-space:nowrap;color:var(--ink-2);background:var(--bg);border-radius:4px;padding:2px 4px}
+.filter-chip[data-state=only]{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.filter-chip[data-state=only] .filter-state{color:white;background:var(--accent)}
+.filter-chip[data-state=not]{background:#fff2e8;border-color:#ad6536}
+.filter-chip[data-state=not] .filter-state{color:white;background:#97501f}
+.setting-choice,.zoom-setting{border:0;padding:0;margin:0;min-width:0}
+.setting-choice legend,.zoom-setting legend{font-size:12px;color:var(--ink-2);padding:0;margin-bottom:6px}
+.radio-options{display:flex;gap:4px;flex-wrap:wrap}
+.radio-options label{position:relative;cursor:pointer}
+.radio-options input{position:absolute;opacity:0;width:1px;height:1px}
+.radio-options span{display:flex;align-items:center;min-height:40px;padding:6px 10px;border:1px solid var(--line);border-radius:7px;font-size:12px;background:var(--surface)}
+.radio-options input:checked+span{border-color:var(--accent);background:var(--accent-soft);color:var(--accent);font-weight:700}
+.radio-options input:focus-visible+span{outline:3px solid var(--accent);outline-offset:2px}
+.zoom-setting{flex:1 0 100%}
+#zoomValue{font-weight:700;color:var(--accent);margin-left:8px}
+.zoom-controls{display:flex;align-items:center;gap:10px;max-width:460px}
+.zoom-controls button{border:1px solid var(--line);border-radius:7px;background:var(--surface);color:var(--ink-2);min-width:40px;min-height:40px;padding:4px 8px}
+#zoomReset{font-size:11px;white-space:nowrap}
+#tableZoom{flex:1;min-width:60px;min-height:44px;margin:0;accent-color:var(--accent)}
+#mx{zoom:var(--table-zoom,1)}
+.cell-detail,.card-detail{color:var(--ink-2);font-size:11px;font-weight:400}
+.card-detail{margin:0 0 0 auto;padding:4px;min-width:44px}
+.cell-detail{margin-top:2px;padding:2px 0}
+@media(max-width:640px), (max-height:500px) and (pointer:coarse){
+  body{padding-bottom:calc(76px + env(safe-area-inset-bottom))}
+  .bar>.rl{margin-left:auto}
+  .search{position:fixed;left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom) + var(--keyboard-inset,0px));z-index:8;max-width:none;margin:0;min-height:52px;border-radius:16px;background:var(--surface);box-shadow:0 4px 22px rgba(16,23,32,.18);border-color:#b7c2cc}
+  .search input{padding:12px 4px;min-height:48px}
+  .search:focus-within{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft),0 4px 22px rgba(16,23,32,.18)}
+  .filter-chip,.radio-options span{min-height:44px}
+  .settings{gap:16px}
+  .setting-choice{flex:1 1 140px}
+  .zoom-controls{gap:6px}.zoom-controls button{min-height:44px}
+  .pagination{padding-bottom:8px}
+}
+@media(max-height:500px) and (max-width:640px), (max-height:500px) and (pointer:coarse){
+  .bar{height:0;min-height:0;padding:0;border:0}
+  .bar>.ttl,.bar>.rl{display:none}
+  body.search-focused .people,body.search-focused .toolbar,body.search-focused .active-filters,body.search-focused .pagination{display:none!important}
 }

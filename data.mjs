@@ -231,7 +231,7 @@ async function fetchSheet(name, bust){
   return parseCSV(await res.text());
 }
 
-async function loadData(bust){
+async function loadSheets(bust){
   const [m, a, x] = await Promise.all([
     fetchSheet(SHEETS.matrix, bust),
     fetchSheet(SHEETS.aux, bust).catch(() => []),
@@ -252,5 +252,34 @@ async function loadData(bust){
   return build(m, aux, axis, warn);
 }
 
+// Keep a complete last-successful dataset independently of app asset versions.
+// This also works on the first visit, before a Service Worker controls the page.
+const DATA_CACHE = "kosho-data-v1";
+const SNAPSHOT_URL = new URL("./data.snapshot.json", import.meta.url).href;
+
+async function loadData(bust){
+  try {
+    const data = await loadSheets(bust);
+    try {
+      const cache = await caches.open(DATA_CACHE);
+      await cache.put(SNAPSHOT_URL, new Response(JSON.stringify(data), {
+        headers:{"Content-Type":"application/json"},
+      }));
+    } catch (_) { /* Storage may be unavailable; still display the fetched data. */ }
+    return data;
+  } catch (error) {
+    try {
+      const cache = await caches.open(DATA_CACHE);
+      const response = await cache.match(SNAPSHOT_URL);
+      if (response) {
+        const data = await response.json();
+        if (data.version === 2 && Array.isArray(data.chars) && Array.isArray(data.cells)) {
+          return {...data, warn:[...(data.warn || []), "シートに接続できないため、前回取得したデータを表示しています。再読み込みで最新データを取得できます。"]};
+        }
+      }
+    } catch (_) { /* Preserve the original acquisition error. */ }
+    throw error;
+  }
+}
 
 export {parseCSV, splitOutside, cellState, parseCell, build, loadData};

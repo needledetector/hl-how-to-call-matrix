@@ -28,6 +28,7 @@ let matrixDirty = true;
 const PAGE_SIZE = 40;
 const filterControls = [];
 let clippingFrame = null;
+let tableZoom = 100;
 
 function updateClippingHints(){
   if (view !== "matrix" || !window.requestAnimationFrame) return;
@@ -38,7 +39,7 @@ function updateClippingHints(){
       .filter(el => el.getClientRects().length)
       .map(el => [el.nextElementSibling, el.scrollHeight > el.clientHeight + 1]);
     for (const [button, clipped] of labels) {
-      if (button.textContent !== "未調査") button.textContent = clipped ? "続きを読む" : "詳細を見る";
+      if (button.textContent !== "未調査") button.textContent = clipped ? "続きを読む" : "詳細…";
     }
   });
 }
@@ -53,7 +54,7 @@ function renderList(){
     return '<article class="result-card" data-r="' + esc(c.f) + '" data-c="' + esc(c.t) + '">' +
       '<h3>' + esc(from.name) + '<span class="ar"> → </span>' + esc(to.name) + '</h3>' +
       '<div class="list-tokens">' + apps.map(tokenHTML).join("") + note + '</div>' +
-      '<button class="card-detail" aria-label="' + esc(from.name + ' → ' + to.name + ' の詳細') + '">詳細を見る →</button></article>';
+      '<button class="card-detail" aria-label="' + esc(from.name + ' → ' + to.name + ' の詳細') + '">詳細…</button></article>';
   }).join("");
   $("#prevPage").disabled = listPage === 0;
   $("#nextPage").disabled = start + PAGE_SIZE >= results.length;
@@ -105,7 +106,8 @@ async function start(bust){
         srcNote = "シートに接続できないため同梱データを表示しています";
       }catch(_){
         showMsg("データを読み込めませんでした。<br><small>" + esc(err.message) +
-          "</small><br><br><small>file:// で開いていませんか。<br>HTTPサーバ経由で表示してください。</small>");
+          "</small><small>通信状況を確認して、もう一度お試しください。</small>" +
+          '<button class="tool-button" data-retry>もう一度読み込む</button>');
         $("#sum").textContent = "エラー";
         return;
       }
@@ -214,7 +216,7 @@ function renderMatrix(){
            (cell && cell.s ? ' data-s="' + cell.s + '"' : "") +
            '><div class="clip">' + cellHTML(r.id, c.id) + '</div>' +
            '<button class="cell-detail" aria-label="' + esc(r.name + ' → ' + c.name + ' の詳細') + '">' +
-           (cell ? '詳細を見る' : '未調査') + '</button></td>';
+           (cell ? '詳細…' : '未調査') + '</button></td>';
     }
     h += "</tr>";
   }
@@ -254,18 +256,18 @@ function buildChips(){
 const charChips = [];
 
 function addFilter(row, label, key, selection){
-  const wrap = document.createElement("label");
-  wrap.className = "filter-field";
-  const text = document.createElement("span");
-  text.textContent = label;
-  const control = document.createElement("select");
-  control.innerHTML = '<option value="">指定なし</option><option value="only">限定</option><option value="not">除外</option>';
-  control.onchange = () => {
-    if (control.value) selection.set(key, control.value); else selection.delete(key);
+  const control = document.createElement("button");
+  control.className = "filter-chip";
+  control.type = "button";
+  control.onclick = () => {
+    const current = selection.get(key);
+    if (!current) selection.set(key, "only");
+    else if (current === "only") selection.set(key, "not");
+    else selection.delete(key);
     apply();
   };
-  wrap.appendChild(text); wrap.appendChild(control); row.appendChild(wrap);
-  filterControls.push({control, wrap, selection, key});
+  row.appendChild(control);
+  filterControls.push({control, label, selection, key});
 }
 
 function buildFilters(){
@@ -362,16 +364,18 @@ function apply(){
     b.dataset.s = on === 0 ? "off" : on === b._ids.length ? "on" : "part";
     b.setAttribute("aria-pressed", on === 0 ? "false" : on === b._ids.length ? "true" : "mixed");
   });
-  filterControls.forEach(({control, wrap, selection, key}) => {
-    control.value = selection.get(key) || "";
-    wrap.dataset.state = control.value;
+  filterControls.forEach(({control, label, selection, key}) => {
+    const state = selection.get(key) || "";
+    const stateLabel = state === "only" ? "限定" : state === "not" ? "除外" : "指定なし";
+    const nextLabel = state === "only" ? "除外" : state === "not" ? "指定なし" : "限定";
+    control.dataset.state = state;
+    control.innerHTML = esc(label) + '<span class="filter-state">' + stateLabel + '</span>';
+    control.setAttribute("aria-label", label + "：" + stateLabel + "。タップで" + nextLabel);
   });
-  $("#bAuto").value = autoHide ? "on" : "off";
-  $("#bMode").value = mode;
-  $("#bClip").value = String(clip);
-  $("#bCW").value = cw;
-  $("#bShort").value = useShort ? "short" : "full";
-  $("#shortSetting").hidden = !D.chars.some(c => c.abbr);
+  const settings = {bAuto:autoHide ? "on" : "off", bMode:mode, bClip:String(clip), bCW:cw, bShort:useShort ? "short" : "full"};
+  document.querySelectorAll(".settings input[type=radio]").forEach(input => { input.checked = settings[input.name] === input.value; });
+  $("#bShort").hidden = !D.chars.some(c => c.abbr);
+  paintZoom();
   $("#fromPerson").value = fromPerson;
   $("#toPerson").value = toPerson;
   $("#rangeCount").textContent = seed.length + "/" + D.chars.length + "人";
@@ -474,7 +478,10 @@ function resetFilters(){
   $("#q").value = ""; apply();
 }
 $("#bReset").onclick = resetFilters;
-$("#msg").onclick = e => { if (e.target.closest("[data-reset]")) resetFilters(); };
+$("#msg").onclick = e => {
+  if (e.target.closest("[data-reset]")) resetFilters();
+  if (e.target.closest("[data-retry]")) start(true);
+};
 $("#reload").onclick = () => start(true);
 $("#fromPerson").onchange = e => { fromPerson = e.target.value; hidden.delete(fromPerson); apply(); };
 $("#toPerson").onchange = e => { toPerson = e.target.value; hidden.delete(toPerson); apply(); };
@@ -490,6 +497,24 @@ $("#bAuto").onchange = e => { autoHide = e.target.value === "on"; apply(); };
 $("#bMode").onchange = e => { mode = e.target.value; apply(); };
 $("#bClip").onchange = e => { clip = Number(e.target.value); apply(); };
 $("#bCW").onchange = e => { cw = e.target.value; apply(); };
+function paintZoom(){
+  document.documentElement.style.setProperty("--table-zoom", tableZoom / 100);
+  $("#tableZoom").value = String(tableZoom);
+  $("#zoomValue").textContent = tableZoom + "%";
+  $("#tableZoom").setAttribute("aria-valuetext", tableZoom + "%");
+  $("#zoomOut").disabled = tableZoom <= 60;
+  $("#zoomIn").disabled = tableZoom >= 160;
+}
+function setZoom(value){
+  tableZoom = Math.max(60, Math.min(160, Math.round(value / 10) * 10));
+  paintZoom(); updateClippingHints();
+  if (D) save();
+}
+$("#tableZoom").oninput = e => setZoom(Number(e.target.value));
+$("#zoomOut").onclick = () => setZoom(tableZoom - 10);
+$("#zoomIn").onclick = () => setZoom(tableZoom + 10);
+$("#zoomReset").onclick = () => setZoom(100);
+
 
 let qt = null;
 $("#q").oninput = () => { clearTimeout(qt); qt = setTimeout(apply, 120); };
@@ -558,7 +583,7 @@ function openSheet(f, t){
 function save(){
   const s = {h:[...hidden], c:[...selCell], f:[...selFlag], a:[...selAxis],
              m:mode, l:clip, w:cw, u:autoHide, p:panelH, s:useShort,
-             from:fromPerson, to:toPerson, view, q:$("#q").value};
+             from:fromPerson, to:toPerson, view, q:$("#q").value, z:tableZoom};
   const hash = "#" + encodeURIComponent(JSON.stringify(s));
   if (location.hash !== hash) history.replaceState(null, "", hash);
 }
@@ -585,6 +610,7 @@ function restore(){
     if (Object.hasOwn(CW, s.w)) cw = s.w;
     if (s.u === true) autoHide = true;
     if (s.s === false) useShort = false;
+    if (Number.isFinite(s.z) && s.z >= 60 && s.z <= 160) tableZoom = Math.round(s.z / 10) * 10;
     if (typeof s.from === "string") fromPerson = s.from;
     if (typeof s.to === "string") toPerson = s.to;
     if (["matrix", "list"].includes(s.view)) view = s.view;
@@ -595,3 +621,17 @@ function restore(){
 
 // Start after all UI state and event handlers have been initialized.
 start(false);
+
+if (window.visualViewport) {
+  const adjustSearch = () => {
+    document.body.classList.toggle("search-focused", document.activeElement === $("#q"));
+    const viewport = window.visualViewport;
+    const keyboardInset = document.activeElement === $("#q") && viewport.scale === 1
+      ? Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop) : 0;
+    document.documentElement.style.setProperty("--keyboard-inset", keyboardInset + "px");
+  };
+  window.visualViewport.addEventListener("resize", adjustSearch);
+  window.visualViewport.addEventListener("scroll", adjustSearch);
+  $("#q").addEventListener("focus", adjustSearch);
+  $("#q").addEventListener("blur", adjustSearch);
+}

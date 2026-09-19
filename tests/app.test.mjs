@@ -64,3 +64,26 @@ test('controls work before data loads and repeated reloads share the active load
   await context.started;
   assert.equal(node('#reload').disabled, false);
 });
+
+test('table scale restores from URL and can be reset without clearing filters', async () => {
+  const {context, node, location} = app('#' + encodeURIComponent(JSON.stringify({z:140, c:[['unsure', 'only']]})));
+  await context.started;
+  assert.equal(node('#zoomValue').textContent, '140%');
+  node('#zoomReset').onclick();
+  assert.equal(node('#zoomValue').textContent, '100%');
+  const saved = JSON.parse(decodeURIComponent(location.hash.slice(1)));
+  assert.equal(saved.z, 100);
+  assert.deepEqual(saved.c, [['unsure', 'only']]);
+});
+
+test('table scale ignores invalid saved values and stops at the supported limits', async () => {
+  const {context, node} = app('#' + encodeURIComponent(JSON.stringify({z:999})));
+  await context.started;
+  assert.equal(node('#zoomValue').textContent, '100%');
+  for (let i = 0; i < 10; i++) node('#zoomIn').onclick();
+  assert.equal(node('#zoomValue').textContent, '160%');
+  assert.equal(node('#zoomIn').disabled, true);
+  for (let i = 0; i < 15; i++) node('#zoomOut').onclick();
+  assert.equal(node('#zoomValue').textContent, '60%');
+  assert.equal(node('#zoomOut').disabled, true);
+});

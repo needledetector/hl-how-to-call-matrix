@@ -3,6 +3,15 @@ import assert from 'node:assert/strict';
 import {parseCSV, parseCell, cellState, build, loadData} from '../data.mjs';
 import {norm, normH, toHira, makeMatcher, collapse, matchingCells} from '../search.mjs';
 
+function mockCaches(t, cacheStorage){
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'caches');
+  Object.defineProperty(globalThis, 'caches', {value:cacheStorage, configurable:true});
+  t.after(() => {
+    if (descriptor) Object.defineProperty(globalThis, 'caches', descriptor);
+    else delete globalThis.caches;
+  });
+}
+
 const matrix = [['凡例', 'あお', 'しろ'], ['あお', '私◎', 'シロ(愛称)*←白さん'], ['しろ', '※', '']];
 const selections = (overrides = {}) => ({selFlag: new Map(), selAxis: new Map(), selCell: new Map(), ...overrides});
 const token = (label, g = [], x = []) => ({_k: norm(label), _kh: toHira(norm(label)), _x: x, g});
@@ -47,6 +56,36 @@ test('missing optional sheets do not prevent matrix loading', async t => {
   const data = await loadData(false);
   assert.equal(data.cells[0].a[0].l, '私');
   assert.ok(data.warn.includes('軸マッピングが空です'));
+});
+
+test('first successful load is available offline without a controlling service worker', async t => {
+  let snapshot;
+  const cache = {put: async (_key, response) => { snapshot = response; }, match: async () => snapshot?.clone()};
+  mockCaches(t, {open: async () => cache});
+  const fetchMock = t.mock.method(globalThis, 'fetch', async url => {
+    if (new URL(url).searchParams.get('sheet') !== '呼称表') throw new Error('optional sheet missing');
+    return new Response('凡例,あお\nあお,私◎');
+  });
+  const online = await loadData(false);
+  assert.ok(snapshot);
+  fetchMock.mock.mockImplementation(async () => { throw new Error('offline'); });
+  const offline = await loadData(true);
+  assert.deepEqual(offline.chars, online.chars);
+  assert.deepEqual(offline.cells, online.cells);
+  assert.ok(offline.warn.some(w => w.includes('前回取得したデータ')));
+});
+
+test('storage failure does not prevent successful online loading', async t => {
+  mockCaches(t, {open: async () => { throw new Error('storage denied'); }});
+  t.mock.method(globalThis, 'fetch', async url => new Response(
+    new URL(url).searchParams.get('sheet') === '呼称表' ? '凡例,あお\nあお,私◎' : ''));
+  assert.equal((await loadData(false)).chars.length, 1);
+});
+
+test('a missing or malformed snapshot preserves the original acquisition error', async t => {
+  mockCaches(t, {open: async () => ({match: async () => new Response('{}')})});
+  t.mock.method(globalThis, 'fetch', async () => { throw new Error('sheet unavailable'); });
+  await assert.rejects(loadData(false), /sheet unavailable/);
 });
 
 test('hiragana search matches katakana while katakana search remains distinct', () => {

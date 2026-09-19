@@ -1,5 +1,5 @@
 // アプリ本体を更新したら CACHE の版番号を上げること。
-const CACHE = "kosho-v5";
+const CACHE = "kosho-v7";
 const ASSETS = ["./", "./index.html", "./app.js", "./data.mjs", "./search.mjs",
                 "./style.css", "./manifest.webmanifest", "./apple-touch-icon.png",
                 "./icon-192.png", "./icon-512.png", "./icon-maskable-512.png"];
@@ -12,7 +12,7 @@ self.addEventListener("install", e => {
 
 self.addEventListener("activate", e => {
   e.waitUntil(caches.keys()
-    .then(ks => Promise.all(ks.filter(k => k.startsWith("kosho-") && k !== CACHE)
+    .then(ks => Promise.all(ks.filter(k => /^kosho-v\d+$/.test(k) && k !== CACHE)
       .map(k => caches.delete(k))))
     .then(() => self.clients.claim()));
 });

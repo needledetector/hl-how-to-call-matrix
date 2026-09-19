@@ -1,8 +1,9 @@
 // Dependency-free Chromium smoke test. Synthetic sheets by default; --live uses real data.
 // Run: node tests/browser.mjs [path-to-chrome-or-edge] [--live] [--offline] [--url=...]
+// Compare real-data performance: --perf [--revision=commit-hash]
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
-import {spawn} from 'node:child_process';
+import {spawn, execFileSync} from 'node:child_process';
 import {readFile, writeFile, mkdtemp, access} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join, resolve, extname, sep} from 'node:path';
@@ -11,6 +12,9 @@ import {once} from 'node:events';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const live = process.argv.includes('--live');
+const perf = process.argv.includes('--perf');
+const revision = process.argv.find(arg => arg.startsWith('--revision='))?.slice(11);
+if (revision && !/^[a-f0-9]{7,40}$/.test(revision)) throw new Error('Use a commit hash for --revision.');
 const pageURL = process.argv.find(arg => arg.startsWith('--url='))?.slice(6);
 const candidates = [process.argv.slice(2).find(arg => !arg.startsWith('--')), process.env.CHROME_PATH,
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -25,7 +29,7 @@ const server = createServer(async (req, res) => {
   const path = resolve(root, '.' + (pathname === '/' ? '/index.html' : pathname));
   if (!path.startsWith(resolve(root) + sep)) { res.writeHead(403).end(); return; }
   try {
-    const body = await readFile(path);
+    const body = revision ? execFileSync('git', ['show', revision + ':' + path.slice(resolve(root).length + 1).replaceAll('\\', '/')], {cwd:root, stdio:['ignore','pipe','ignore'], maxBuffer:5_000_000}) : await readFile(path);
     res.writeHead(200, {'Content-Type':mime[extname(path)] || 'text/plain'}).end(body);
   }
   catch { res.writeHead(404).end(); }
@@ -94,7 +98,42 @@ try {
     await writeFile(join(artifacts, name + '.png'), Buffer.from(result.data, 'base64'));
   };
   await send('Runtime.enable'); await send('Page.enable'); await send('Network.enable');
-  if (live) {
+  if (perf) {
+    await send('Emulation.setDeviceMetricsOverride', {width:1280, height:900, deviceScaleFactor:1, mobile:false});
+    await send('Page.navigate', {url:origin});
+    await waitFor(`document.querySelectorAll('#mx td').length > 0 && document.querySelector('#msg').style.display === 'none'`);
+    await new Promise(done => setTimeout(done, 300));
+    await send('Emulation.setCPUThrottlingRate', {rate:4});
+    await send('Performance.enable');
+    await evaluate(`(() => {
+      window.geometryReads = 0;
+      const rects = Element.prototype.getClientRects;
+      Element.prototype.getClientRects = function(...args) { window.geometryReads++; return rects.apply(this, args); };
+      for (const name of ['scrollHeight', 'clientHeight']) {
+        const descriptor = Object.getOwnPropertyDescriptor(Element.prototype, name);
+        Object.defineProperty(Element.prototype, name, {...descriptor, get() { window.geometryReads++; return descriptor.get.call(this); }});
+      }
+    })()`);
+    const baseline = Object.fromEntries((await send('Performance.getMetrics')).metrics.map(m => [m.name, m.value]));
+    const samples = [];
+    for (const query of ['ぺこ', '', 'ちゃん', '', 'さん', '']) {
+      samples.push(await evaluate(`new Promise(resolve => {
+        window.geometryReads = 0;
+        const start = performance.now();
+        const input = document.querySelector('#q'); input.value = ${JSON.stringify(query)};
+        input.dispatchEvent(new Event('input'));
+        setTimeout(() => requestAnimationFrame(() => requestAnimationFrame(() => resolve({query:input.value, elapsedMs:Math.round(performance.now()-start), geometryReads:window.geometryReads}))), 130);
+      })`));
+    }
+    const end = Object.fromEntries((await send('Performance.getMetrics')).metrics.map(m => [m.name, m.value]));
+    const metrics = Object.fromEntries(['TaskDuration','LayoutDuration','RecalcStyleDuration','ScriptDuration'].map(key => [key + 'Ms', Math.round((end[key]-baseline[key])*1000)]));
+    console.log(JSON.stringify({revision:revision || 'workspace',cpuSlowdown:4,cells:await evaluate(`document.querySelectorAll('#mx td').length`),elements:await evaluate(`document.querySelectorAll('#mx *').length`),samples,metrics}, null, 2));
+    if (!revision) {
+      const cellCount = await evaluate(`document.querySelectorAll('#mx td').length`);
+      assert.ok(samples.every(sample => sample.geometryReads < cellCount), 'Clipping checks must stay limited to the viewport');
+    }
+    assert.deepEqual(errors, []);
+  } else if (live) {
     await send('Page.navigate', {url:pageURL || origin});
     try { await waitFor(`document.querySelector('#resultSummary')?.textContent || document.querySelector('#sum')?.textContent === 'エラー'`); } catch (_) {}
     console.log(JSON.stringify(await evaluate(`({url:location.href, message:document.querySelector('#msg')?.textContent, summary:document.querySelector('#sum')?.textContent, result:document.querySelector('#resultSummary')?.textContent, cells:document.querySelectorAll('#mx td').length})`), null, 2));
@@ -218,6 +257,8 @@ try {
   assert.equal(await evaluate(`document.querySelector('#zoomValue').textContent`), '100%');
   await change('#bClip', '2');
   await waitFor(`[...document.querySelectorAll('.cell-detail')].some(button => button.textContent === '続きを読む')`);
+  await evaluate(`document.querySelector('#scroll').scrollTop = document.querySelector('#scroll').scrollHeight`);
+  await waitFor(`[...document.querySelectorAll('#mx tr:last-child .cell-detail')].some(button => button.textContent === '続きを読む')`);
   // Small phone: neither the body nor the fixed control area should overflow the viewport.
   await send('Emulation.setDeviceMetricsOverride', {width:320, height:568, deviceScaleFactor:1, mobile:true});
   await click('#settingsToggle'); await click('#viewList'); await click('#filterToggle');

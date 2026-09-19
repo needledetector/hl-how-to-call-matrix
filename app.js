@@ -28,6 +28,8 @@ let matrixDirty = true;
 const PAGE_SIZE = 40;
 const filterControls = [];
 let clippingFrame = null;
+let clippingObserver = null;
+const visibleClips = new Set();
 let tableZoom = 100;
 
 function updateClippingHints(){
@@ -35,13 +37,29 @@ function updateClippingHints(){
   window.cancelAnimationFrame(clippingFrame);
   clippingFrame = window.requestAnimationFrame(() => {
     // Read sizes together before writing labels to avoid repeated layout work.
-    const labels = [...document.querySelectorAll("#mx td .clip")]
+    const labels = [...visibleClips]
       .filter(el => el.getClientRects().length)
       .map(el => [el.nextElementSibling, el.scrollHeight > el.clientHeight + 1]);
     for (const [button, clipped] of labels) {
-      if (button.textContent !== "未調査") button.textContent = clipped ? "続きを読む" : "詳細…";
+      if (button.textContent === "未調査") continue;
+      const label = clipped ? "続きを読む" : "詳細…";
+      if (button.textContent !== label) button.textContent = label;
     }
   });
+}
+
+function observeClipping(){
+  clippingObserver?.disconnect();
+  visibleClips.clear();
+  if (!window.IntersectionObserver) return;
+  clippingObserver = new window.IntersectionObserver(entries => {
+    for (const entry of entries) {
+      if (entry.isIntersecting) visibleClips.add(entry.target);
+      else visibleClips.delete(entry.target);
+    }
+    updateClippingHints();
+  }, {root:$("#scroll")});
+  document.querySelectorAll("#mx td .clip").forEach(el => clippingObserver.observe(el));
 }
 
 function renderList(){
@@ -221,6 +239,7 @@ function renderMatrix(){
     h += "</tr>";
   }
   $("#scroll").innerHTML = h + "</tbody></table>";
+  observeClipping();
   matrixDirty = false;
 }
 
@@ -346,7 +365,8 @@ function apply(){
     rules.push(".tk" + attrs.map(a => ":not(" + a + ")").join("") + "{display:none}");
     rules.push("td .st, td .bd{display:none}");
   }
-  $("#filter").textContent = rules.join("\n");
+  const filterCSS = rules.join("\n");
+  if ($("#filter").textContent !== filterCSS) $("#filter").textContent = filterCSS;
   $("#qx").hidden = !q;
   $("#searchNav").hidden = !q;
   $("#prevHit").disabled = $("#nextHit").disabled = !results.length;
@@ -366,6 +386,7 @@ function apply(){
   });
   filterControls.forEach(({control, label, selection, key}) => {
     const state = selection.get(key) || "";
+    if (control.dataset.state === state) return;
     const stateLabel = state === "only" ? "限定" : state === "not" ? "除外" : "指定なし";
     const nextLabel = state === "only" ? "除外" : state === "not" ? "指定なし" : "限定";
     control.dataset.state = state;

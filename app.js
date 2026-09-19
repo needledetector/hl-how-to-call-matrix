@@ -5,6 +5,9 @@ import {norm, normH, toHira, hasHira, makeMatcher, matchingCells} from "./search
 const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const CW = {narrow:112, normal:132, wide:176};
+// Capture the initial viewport default so resizing does not change URL comparisons.
+const DEFAULTS = Object.freeze({m:"hide", l:5, w:"normal", u:true, p:null, s:false,
+  from:"", to:"", view:window.matchMedia?.("(max-width: 640px)").matches ? "list" : "matrix", q:"", z:100});
 const STATE_LABEL = {unsure:"※ 未確認", na:"離籍・未デビュー", omitted:"省略"};
 const FLAG_LABEL = {main:"基本", rare:"稀", third:"三人称", egosa:"エゴサワード",
                     retired:"使用終了"};
@@ -19,7 +22,7 @@ const selFlag = new Map();     // Name flag       → "only" | "not"
 const selAxis = new Map();     // "Axis:Value"    → "only" | "not"
 const cellKey = (from, to) => JSON.stringify([from, to]);
 const attr = s => String(s).replace(/["\\]/g, "\\$&");   // For attribute selector strings
-let mode = "hide", clip = 5, cw = "normal", autoHide = true, panelH = null, useShort = false;
+let {m:mode, l:clip, w:cw, u:autoHide, p:panelH, s:useShort} = DEFAULTS;
 let theme = "light", matchCache = null;
 try { if (localStorage.getItem("kosho-theme") === "dark") theme = "dark"; } catch (_) {}
 
@@ -36,8 +39,7 @@ $("#themeToggle").onclick = () => {
 };
 paintTheme();
 
-let fromPerson = "", toPerson = "";
-let view = window.matchMedia?.("(max-width: 640px)").matches ? "list" : "matrix";
+let {from:fromPerson, to:toPerson, view} = DEFAULTS;
 let results = [], activeMatcher = null, hitIndex = -1, listPage = 0;
 let matrixDirty = true;
 const PAGE_SIZE = 40;
@@ -45,7 +47,7 @@ const filterControls = [];
 let clippingFrame = null;
 let clippingObserver = null;
 const visibleClips = new Set();
-let tableZoom = 100;
+let tableZoom = DEFAULTS.z;
 
 function updateClippingHints(){
   if (view !== "matrix" || !window.requestAnimationFrame) return;
@@ -634,8 +636,11 @@ function save(){
   const s = {h:[...hidden], c:[...selCell], f:[...selFlag], a:[...selAxis],
              m:mode, l:clip, w:cw, u:autoHide, p:panelH, s:useShort,
              from:fromPerson, to:toPerson, view, q:$("#q").value, z:tableZoom};
-  const hash = "#" + encodeURIComponent(JSON.stringify(s));
-  if (location.hash !== hash) history.replaceState(null, "", hash);
+  for (const [key, value] of Object.entries(s)) {
+    if (Array.isArray(value) ? value.length === 0 : value === DEFAULTS[key]) delete s[key];
+  }
+  const hash = Object.keys(s).length ? "#" + encodeURIComponent(JSON.stringify(s)) : "";
+  if (location.hash !== hash) history.replaceState(null, "", location.pathname + location.search + hash);
 }
 function restore(){
   if (!location.hash) return;

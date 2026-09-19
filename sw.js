@@ -1,5 +1,5 @@
 // アプリ本体を更新したら CACHE の版番号を上げること。
-const CACHE = "kosho-v9";
+const CACHE = "kosho-v10";
 const ASSETS = ["./", "./index.html", "./app.js", "./data.mjs", "./search.mjs",
                 "./style.css", "./manifest.webmanifest", "./apple-touch-icon.png",
                 "./icon-192.png", "./icon-512.png", "./icon-maskable-512.png"];

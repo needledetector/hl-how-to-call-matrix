@@ -8,7 +8,7 @@ const source = (await readFile(new URL('../app.js', import.meta.url), 'utf8'))
   .replace(/^import .*;\r?\n/gm, '')
   .replace('start(false);', 'globalThis.started = start(false);');
 
-function app(hash = '', loadData = async () => ({chars: [{id: 'a"&', name: 'あお', gens: []}], cells: [], axes: {}})) {
+function app(hash = '', loadData = async () => ({chars: [{id: 'a"&', name: 'あお', gens: []}], cells: [], axes: {}}), {mobile = false} = {}) {
   const nodes = new Map();
   const element = () => ({
     value: '', style: {setProperty() {}, removeProperty() {}}, dataset: {},
@@ -19,15 +19,16 @@ function app(hash = '', loadData = async () => ({chars: [{id: 'a"&', name: 'あ�
     if (!nodes.has(selector)) nodes.set(selector, element());
     return nodes.get(selector);
   };
-  const location = {hash, replace(value) { this.hash = value; }};
+  const location = new URL('https://example.test/matrix/?source=bookmark' + hash);
+  const historyWrites = [];
   const context = vm.createContext({...search, loadData, location, navigator: {},
-    history: {replaceState(_state, _title, value) { location.hash = value; }},
-    performance, setTimeout, clearTimeout, window: {innerHeight: 800},
+    history: {replaceState(_state, _title, value) { historyWrites.push(value); location.href = new URL(value, location).href; }},
+    performance, setTimeout, clearTimeout, window: {innerHeight: 800, matchMedia: () => ({matches: mobile})},
     document: {addEventListener() {}, querySelector: node, querySelectorAll: () => [], createElement: element,
       documentElement: element(), body: element()},
   });
   vm.runInContext(source, context);
-  return {context, node, location};
+  return {context, node, location, historyWrites};
 }
 
 test('initialization renders escaped IDs and ignores invalid or stale URL filters', async () => {
@@ -35,13 +36,11 @@ test('initialization renders escaped IDs and ignores invalid or stale URL filter
   const {context, node, location} = app(hash);
   await context.started;
   assert.match(node('#scroll').innerHTML, /data-c="a&quot;&amp;"/);
-  const saved = JSON.parse(decodeURIComponent(location.hash.slice(1)));
-  assert.deepEqual(saved.c, []);
-  assert.deepEqual(saved.a, []);
-  assert.equal(saved.w, 'normal');
-  assert.equal(saved.l, 5);
-  assert.equal(saved.u, true);
-  assert.equal(saved.s, false);
+  assert.equal(location.hash, '');
+  assert.equal(vm.runInContext('cw', context), 'normal');
+  assert.equal(vm.runInContext('clip', context), 5);
+  assert.equal(vm.runInContext('autoHide', context), true);
+  assert.equal(vm.runInContext('useShort', context), false);
   assert.equal(node('#reload').disabled, false);
 });
 
@@ -94,8 +93,44 @@ test('table scale restores from URL and can be reset without clearing filters', 
   node('#zoomReset').onclick();
   assert.equal(node('#zoomValue').textContent, '100%');
   const saved = JSON.parse(decodeURIComponent(location.hash.slice(1)));
-  assert.equal(saved.z, 100);
+  assert.equal(Object.hasOwn(saved, 'z'), false);
   assert.deepEqual(saved.c, [['unsure', 'only']]);
+});
+
+test('desktop and mobile defaults leave the URL untouched; restoring defaults removes the hash', async () => {
+  for (const mobile of [false, true]) {
+    const {context, node, location, historyWrites} = app('', undefined, {mobile});
+    await context.started;
+    assert.equal(location.hash, '');
+    assert.deepEqual(historyWrites, []);
+    assert.equal(vm.runInContext('view', context), mobile ? 'list' : 'matrix');
+    node('#zoomIn').onclick();
+    assert.deepEqual(JSON.parse(decodeURIComponent(location.hash.slice(1))), {z:110});
+    node('#zoomReset').onclick();
+    assert.equal(location.href, 'https://example.test/matrix/?source=bookmark');
+    node(mobile ? '#viewMatrix' : '#viewList').onclick();
+    const saved = JSON.parse(decodeURIComponent(location.hash.slice(1)));
+    assert.deepEqual(saved, {view:mobile ? 'matrix' : 'list'});
+    const restored = app(location.hash, undefined, {mobile});
+    await restored.context.started;
+    assert.equal(vm.runInContext('view', restored.context), saved.view);
+    node(mobile ? '#viewList' : '#viewMatrix').onclick();
+    assert.equal(location.hash, '');
+  }
+});
+
+test('legacy full URLs restore explicit settings and omit default values on save', async () => {
+  const legacy = {h:[], c:[], f:[], a:[], m:'hide', l:5, w:'normal', u:false, p:null,
+    s:true, from:'', to:'', view:'matrix', q:'しろ', z:100};
+  const {context, node, location} = app('#' + encodeURIComponent(JSON.stringify(legacy)));
+  await context.started;
+  assert.equal(node('#q').value, 'しろ');
+  assert.deepEqual(JSON.parse(decodeURIComponent(location.hash.slice(1))), {u:false, s:true, q:'しろ'});
+  node('#bAuto').onchange({target:{value:'on'}});
+  node('#bShort').onchange({target:{value:'full'}});
+  assert.deepEqual(JSON.parse(decodeURIComponent(location.hash.slice(1))), {q:'しろ'});
+  node('#bReset').onclick();
+  assert.equal(location.hash, '');
 });
 
 test('table scale ignores invalid saved values and stops at the supported limits', async () => {

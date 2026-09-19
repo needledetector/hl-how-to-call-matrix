@@ -181,6 +181,8 @@ try {
   await send('Emulation.setTouchEmulationEnabled', {enabled:true});
   await send('Page.navigate', {url:origin});
   await waitFor(`document.querySelectorAll('.result-card').length === 40`);
+  assert.equal(await evaluate('location.hash'), '');
+  assert.equal(await evaluate(`document.querySelector('.ttl .version').textContent`), 'v10');
   assert.equal(await evaluate(`document.querySelector('#viewList').getAttribute('aria-pressed')`), 'true');
   assert.equal(await evaluate(`document.querySelector('#mx') === null`), true);
   assert.equal(await evaluate(`document.querySelector('#bAuto input[value="on"]').checked`), true);
@@ -211,6 +213,7 @@ try {
   await send('Input.dispatchKeyEvent', {type:'keyUp', key:'Escape', code:'Escape', windowsVirtualKeyCode:27});
   assert.equal(await evaluate(`document.querySelector('#sheet').open`), false);
   await click('#bReset');
+  assert.equal(await evaluate('location.hash'), '');
   await search('しろ');
   assert.equal(await evaluate(`document.querySelector('#resultSummary').textContent`), '検索結果 21件');
   await click('#nextHit');

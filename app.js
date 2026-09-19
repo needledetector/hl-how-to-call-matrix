@@ -1,318 +1,132 @@
+import {loadData} from "./data.mjs";
+import {norm, normH, toHira, hasHira, makeMatcher, collapse, matchingCells} from "./search.mjs";
 
 "use strict";
 const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-// Use NFKC to convert half-width kana to full-width kana and normalize differences in width and size. The distinction between hiragana and katakana is preserved.
-const norm  = s => s.normalize("NFKC").toLowerCase().replace(/[\s　]/g, "");
-// Convert Katakana to Hiragana. This is because names are essentially phonetic transcriptions and often have spelling variations.
-const toHira = s => s.replace(/[\u30a1-\u30f6\u30fd\u30fe]/g,
-                              c => String.fromCharCode(c.charCodeAt(0) - 0x60));
-const normH = s => toHira(norm(s));
-const hasHira = s => /[\u3041-\u3096]/.test(s);
-
 const CW = {narrow:112, normal:132, wide:176};
 const STATE_LABEL = {unsure:"※ 未確認", na:"離籍・未デビュー", omitted:"省略"};
 const FLAG_LABEL = {main:"基本", rare:"稀", third:"三人称", egosa:"エゴサワード",
                     retired:"使用終了"};
 const FLAG_MARK  = {main:"◎", rare:"*", third:"+", egosa:"☆"};   // Symbols are not supposed to be displayed for retired
 
-/* ================= Spreadsheet Acquisition and Analysis ================= */
-const SHEET_ID = "1Ux_YCAYC_HuaFQxwS5_uoT-zew0Z94gZtqDmUDMnnZc";
-const SHEETS = {matrix:"呼称表", aux:"補助データ", axis:"軸マッピング"};
-const gvizURL = (name, bust) =>
-  "https://docs.google.com/spreadsheets/d/" + SHEET_ID +
-  "/gviz/tq?tqx=out:csv&sheet=" + encodeURIComponent(name) + (bust ? "&_=" + Date.now() : "");
-
-/* ---- CSV (RFC4180) ---- */
-function parseCSV(text){
-  const rows = []; let row = [], f = "", q = false;
-  for (let i = 0; i < text.length; i++){
-    const c = text[i];
-    if (q){
-      if (c === '"'){ if (text[i+1] === '"'){ f += '"'; i++; } else q = false; }
-      else f += c;
-    } else if (c === '"'){ q = true; }
-    else if (c === ","){ row.push(f); f = ""; }
-    else if (c === "\n"){ row.push(f); rows.push(row); row = []; f = ""; }
-    else if (c !== "\r"){ f += c; }
-  }
-  if (f !== "" || row.length){ row.push(f); rows.push(row); }
-  return rows.filter(r => r.some(x => x !== ""));
-}
-
-/* ---- Symbols and Brackets ---- */
-const FLAG_OF = {"◎":"main", "*":"rare", "+":"third", "☆":"egosa"};
-const MARK_RE = /([◎*+☆]+)\s*$/;
-const PAREN_RE = /[（(]([^）)]*)[）)]\s*$/;
-const TIMECODE = /\d{1,2}:\d{2}(?::\d{2})?/;
-const NA_SET = new Set(["在籍時未デビュー","デビュー時離籍済","登場時離籍済",
-                        "活動中未登場","活動中未デビュー","在籍時未登場"]);
-
-/* Break lines only outside of parentheses, brackets, and quotation marks */
-function splitOutside(s, sep){
-  sep = sep || "、";
-  const out = []; let buf = "", depth = 0, quoted = false;
-  for (const ch of s){
-    if (ch === '"') quoted = !quoted;
-    else if ("（(「『".includes(ch)) depth++;
-    else if ("）)」』".includes(ch)) depth = Math.max(0, depth - 1);
-    if (ch === sep && depth === 0 && !quoted){ out.push(buf); buf = ""; }
-    else buf += ch;
-  }
-  out.push(buf);
-  return out.map(x => x.trim()).filter(Boolean);
-}
-
-/* Determine the state by checking all cells */
-/* Parentheses at the beginning of a cell indicate a "note on relationships." Sometimes a specific title or way of addressing follows.
-   Example: (Already departed at time of debut) Chairman Senpai+ ... Mentioning them in the third person is possible even after they have left. */
-function cellState(raw){
-  const s = raw.trim();
-  if (s === "※") return {state:"unsure", reason:null, rest:""};
-  const m = s.match(/^[（(]([^）)]*)[）)]\s*/);
-  if (m){
-    const inner = m[1].trim().replace(/^[「『]/, "").replace(/[」』]$/, "");
-    const rest = s.slice(m[0].length).trim();
-    if (inner === "省略") return {state:"omitted", reason:inner, rest};
-    if (NA_SET.has(inner) || /離籍|未デビュー|卒業/.test(inner))
-      return {state:"na", reason:inner, rest};
-  }
-  return {state:null, reason:null, rest:s};
-}
-
-function parseAppellation(part, flags){
-  let t = part.trim();
-  const notes = [];
-  for (let k = 0; k < 4; k++){
-    const before = t;
-    let m = t.match(MARK_RE);
-    if (m){ for (const ch of m[1]) flags[FLAG_OF[ch]] = true; t = t.slice(0, m.index).trimEnd(); }
-    m = t.match(PAREN_RE);
-    if (m){ notes.unshift(m[1]); t = t.slice(0, m.index).trimEnd(); }
-    if (t === before) break;
-  }
-  if (!t && !notes.length) return null;
-  const tags = [], times = [];
-  for (const n of notes)
-    for (const piece of splitOutside(n.normalize("NFKC")))
-      for (let tag of piece.split(/[、/／]/)){
-        tag = tag.trim();
-        if (!tag) continue;
-        if (TIMECODE.test(tag)) times.push(tag);
-        tags.push(tag);
-      }
-  return {label:t, key:norm(t), tags, times};
-}
-
-/* Split the cell using "←". The left side shows active items, and the right side shows discontinued items. Maintain the current order as they are sorted by frequency. */
-function parseCell(raw){
-  const out = [];
-  raw.split(/←|<-/).forEach((seg, gi) => {
-    for (const tokRaw of splitOutside(seg)){
-      const flags = {main:false, rare:false, third:false, egosa:false};
-      const a = parseAppellation(tokRaw, flags);
-      if (!a) continue;
-      a.flags = Object.keys(flags).filter(k => flags[k]);
-      if (gi > 0 || a.tags.includes("旧")) a.flags.push("retired");
-      out.push(a);
-    }
-  });
-  return out;
-}
-
-/* ---- Assemble the final form from 3 sheets ---- */
-function pick(header, ...names){
-  for (const n of names){
-    const i = header.findIndex(h => (h || "").trim() === n);
-    if (i >= 0) return i;
-  }
-  return -1;
-}
-
-function build(mRows, auxRows, axisRows, warn0){
-  const legend = mRows[0][0] || "";
-  let cols = mRows[0].slice(1);
-  while (cols.length && !cols[cols.length - 1].trim()) cols.pop();
-  const nCol = cols.length;
-  const body = mRows.slice(1).filter(r => (r[0] || "").trim());
-  const names = body.map(r => r[0].replace(/\n/g, " ").trim());
-
-  // Supplemental data: Look up by "header" instead of cell position. Use the ID column if it exists.
-  const aux = new Map();
-  if (auxRows.length > 1 && pick(auxRows[0], "人物", "名前", "キャラ", "キャラクター") < 0){
-    warn.push("補助データに人物列がありません");
-    auxRows = [];
-  }
-  if (auxRows.length > 1){
-    const h = auxRows[0];
-    const ci = {
-      name: pick(h, "人物", "名前", "キャラ", "キャラクター"),
-      id:   pick(h, "id", "ID", "Id"),
-      proj: pick(h, "グループ", "プロジェクト"),
-      gen:  pick(h, "期生"),
-      gen2: pick(h, "期生兼"),
-      emo:  pick(h, "絵文字"),
-      abbr: pick(h, "略称", "略", "短縮名", "短縮"),
-    };
-    for (const r of auxRows.slice(1)){
-      const nm = (r[ci.name >= 0 ? ci.name : 0] || "").trim();
-      if (!nm) continue;
-      aux.set(nm, {
-        id:      ci.id   >= 0 ? (r[ci.id] || "").trim() : "",
-        project: ci.proj >= 0 ? (r[ci.proj] || "").trim() : "",
-        gens:    [ci.gen, ci.gen2].filter(i => i >= 0).map(i => (r[i] || "").trim()).filter(Boolean),
-        emoji:   ci.emo  >= 0 ? (r[ci.emo] || "").trim() : "",
-        abbr:    ci.abbr >= 0 ? (r[ci.abbr] || "").trim() : "",
-      });
-    }
-  }
-
-  // Axis mapping: Tag / Axis / Display Name. If there are too many columns, it is determined that a different sheet is being used and an error occurs.
-  const axes = {};
-  if (axisRows.length && Math.max(...axisRows.slice(0, 5).map(r => r.length)) > 4){
-    warn.push("軸マッピングの形が違います（列が多すぎます）。軸チップは出ません");
-    axisRows = [];
-  }
-  for (const r of axisRows){
-    const tag = (r[0] || "").trim(), axis = (r[1] || "").trim();
-    if (!tag || !axis || tag.startsWith("#") || tag === "タグ") continue;
-    axes[tag.normalize("NFKC")] = {axis, label: (r[2] || "").trim() || tag};
-  }
-
-  const idOf = nm => {
-    const a = aux.get(nm);
-    return (a && a.id) ? a.id : nm;   // If the id column does not exist, use the display name as is.
-  };
-
-  const chars = names.map(nm => {
-    const a = aux.get(nm) || {};
-    return {id: idOf(nm), name: nm, key: norm(nm), emoji: a.emoji || null,
-            abbr: a.abbr || null, project: a.project || null,
-            gens: a.gens || [], known: aux.has(nm)};
-  });
-
-  const cells = [];
-  const warn = (warn0 || []).slice();
-  if (nCol !== names.length)
-    warn.push("行 " + names.length + " 件に対し列 " + nCol + " 件。数が合っていません");
-  // The rows and columns refer to the same people in the same order. Map them by position, as using names would break due to notation inconsistencies.
-  const drift = [];
-  for (let j = 0; j < Math.min(nCol, names.length); j++){
-    const cn = cols[j].replace(/\n/g, " ").trim();
-    if (cn !== names[j]) drift.push(names[j] + " / " + cn);
-  }
-  if (drift.length)
-    warn.push("行と列の見出しが " + drift.length + " 件ずれています: " + drift.slice(0, 3).join("、"));
-
-  names.forEach((rn, i) => {
-    const row = body[i];
-    for (let j = 0; j < nCol; j++){
-      const raw = (row[j + 1] || "").replace(/\n/g, " ");
-      if (!raw.trim()) continue;
-      const f = chars[i].id, t = (chars[j] || {}).id;
-      if (t === undefined) continue;
-      const st = cellState(raw);
-      const cell = {f, t};
-      if (st.state){ cell.s = st.state; if (st.reason) cell.r = st.reason; }
-      const apps = [];
-      for (const tok of (st.rest ? parseCell(st.rest) : [])){
-        const ax = {};
-        for (const tag of tok.tags){
-          const hit = axes[tag];
-          if (hit){ (ax[hit.axis] = ax[hit.axis] || []).push(hit.label); }
-        }
-        const a = {l: tok.label};
-        if (tok.key !== tok.label) a.k = tok.key;
-        if (tok.flags.length) a.g = tok.flags;
-        if (tok.tags.length) a.n = tok.tags;
-        if (Object.keys(ax).length) a.x = ax;
-        if (tok.times.length) a.src = tok.times;
-        apps.push(a);
-      }
-      if (apps.length) cell.a = apps;
-      if (cell.s || cell.a) cells.push(cell);
-    }
-  });
-  if (!Object.keys(axes).length && !warn.some(w => w.indexOf("軸マッピング") >= 0))
-    warn.push("軸マッピングが空です");
-  return {version:2, legend, chars, cells, axes, warn};
-}
-
-async function fetchSheet(name, bust){
-  const res = await fetch(gvizURL(name, bust));
-  if (!res.ok) throw new Error(name + " の取得に失敗 (" + res.status + ")");
-  return parseCSV(await res.text());
-}
-
-async function loadData(bust){
-  const [m, a, x] = await Promise.all([
-    fetchSheet(SHEETS.matrix, bust),
-    fetchSheet(SHEETS.aux, bust).catch(() => []),
-    fetchSheet(SHEETS.axis, bust).catch(() => []),
-  ]);
-  // If a sheet= name is not provided, gviz will silently return the first sheet. If the content matches the first sheet, it considers the referenced sheet to be "non-existent."
-  const sig = r => (r[0] || []).join("\u0001");
-  const base = sig(m), warn = [];
-  let aux = a, axis = x;
-  if (a.length && sig(a) === base){
-    warn.push("「" + SHEETS.aux + "」シートが見つかりません");
-    aux = [];
-  }
-  if (x.length && sig(x) === base){
-    warn.push("「" + SHEETS.axis + "」シートが見つかりません");
-    axis = [];
-  }
-  return build(m, aux, axis, warn);
-}
-
 let D = null, cellMap = new Map(), byId = new Map();
 let booted = false, srcNote = "";
+let loading = false;
 const hidden  = new Set();     // Hidden character IDs
 const selCell = new Map();     // Cell status     → "only" | "not"
 const selFlag = new Map();     // Name flag       → "only" | "not"
 const selAxis = new Map();     // "Axis:Value"    → "only" | "not"
-// Cycles through Unselected → Limited → Excluded → Unselected with each tap
-const cycle = (m, k) => {
-  const v = m.get(k);
-  if (!v) m.set(k, "only"); else if (v === "only") m.set(k, "not"); else m.delete(k);
-};
+const cellKey = (from, to) => JSON.stringify([from, to]);
 const attr = s => String(s).replace(/["\\]/g, "\\$&");   // For attribute selector strings
-let mode = "dim", clip = 5, cw = "normal", autoHide = false, panelH = null, useShort = true;
+let mode = "hide", clip = 5, cw = "normal", autoHide = false, panelH = null, useShort = true;
+
+let fromPerson = "", toPerson = "";
+let view = window.matchMedia?.("(max-width: 640px)").matches ? "list" : "matrix";
+let results = [], activeMatcher = null, hitIndex = -1, listPage = 0;
+let matrixDirty = true;
+const PAGE_SIZE = 40;
+const filterControls = [];
+let clippingFrame = null;
+
+function updateClippingHints(){
+  if (view !== "matrix" || !window.requestAnimationFrame) return;
+  window.cancelAnimationFrame(clippingFrame);
+  clippingFrame = window.requestAnimationFrame(() => {
+    // Read sizes together before writing labels to avoid repeated layout work.
+    const labels = [...document.querySelectorAll("#mx td .clip")]
+      .filter(el => el.getClientRects().length)
+      .map(el => [el.nextElementSibling, el.scrollHeight > el.clientHeight + 1]);
+    for (const [button, clipped] of labels) {
+      if (button.textContent !== "未調査") button.textContent = clipped ? "続きを読む" : "詳細を見る";
+    }
+  });
+}
+
+function renderList(){
+  const start = listPage * PAGE_SIZE;
+  $("#list").innerHTML = results.slice(start, start + PAGE_SIZE).map(c => {
+    const from = byId.get(c.f), to = byId.get(c.t);
+    const apps = (c.a || []).filter(activeMatcher.tokenOK);
+    const note = c.s && !activeMatcher.cellNot.includes(c.s)
+      ? '<span class="list-note">' + esc(c.r || STATE_LABEL[c.s]) + '</span>' : "";
+    return '<article class="result-card" data-r="' + esc(c.f) + '" data-c="' + esc(c.t) + '">' +
+      '<h3>' + esc(from.name) + '<span class="ar"> → </span>' + esc(to.name) + '</h3>' +
+      '<div class="list-tokens">' + apps.map(tokenHTML).join("") + note + '</div>' +
+      '<button class="card-detail" aria-label="' + esc(from.name + ' → ' + to.name + ' の詳細') + '">詳細を見る →</button></article>';
+  }).join("");
+  $("#prevPage").disabled = listPage === 0;
+  $("#nextPage").disabled = start + PAGE_SIZE >= results.length;
+  $("#pageInfo").textContent = results.length ? (start + 1) + "–" + Math.min(start + PAGE_SIZE, results.length) + " / " + results.length + "組" : "0組";
+}
+
+function moveHit(step){
+  if (!results.length) return;
+  hitIndex = hitIndex < 0 ? (step > 0 ? 0 : results.length - 1)
+    : (hitIndex + step + results.length) % results.length;
+  const cell = results[hitIndex];
+  document.querySelectorAll(".search-current, .axis-current").forEach(el => el.classList.remove("search-current", "axis-current"));
+  if (view === "list") {
+    listPage = Math.floor(hitIndex / PAGE_SIZE);
+    renderList();
+  }
+  const root = view === "list" ? "#list" : "#scroll";
+  const target = $(root + ' [data-r="' + attr(cell.f) + '"][data-c="' + attr(cell.t) + '"]');
+  if (target) {
+    target.classList.add("search-current");
+    target.scrollIntoView({block:"center", inline:"center", behavior:"instant"});
+    target.querySelector("button")?.focus({preventScroll:true});
+  }
+  if (view === "matrix") {
+    $('#mx thead th[data-c="' + attr(cell.t) + '"]')?.classList.add("axis-current");
+    $('#mx tr[data-r="' + attr(cell.f) + '"] > th')?.classList.add("axis-current");
+  }
+  $("#qn").textContent = (hitIndex + 1) + " / " + results.length + "セル";
+}
 
 /* ================= Loading ================= */
 function showMsg(html){ $("#msg").innerHTML = html; $("#msg").style.display = "grid"; }
 
 async function start(bust){
-  showMsg("スプレッドシートを読み込み中…");
-  $("#sum").textContent = "読み込み中…";
-  try{
-    D = await loadData(bust);
-    srcNote = "";
-  }catch(err){
+  if (loading) return;
+  loading = true;
+  $("#reload").disabled = true;
+  try {
+    showMsg("スプレッドシートを読み込み中…");
+    $("#sum").textContent = "読み込み中…";
     try{
-      const r = await fetch("data.json");
-      if (!r.ok) throw err;
-      D = await r.json();
-      srcNote = "シートに接続できないため同梱データを表示しています";
-    }catch(_){
-      showMsg("データを読み込めませんでした。<br><small>" + esc(err.message) +
-        "</small><br><br><small>file:// で開いていませんか。<br>HTTPサーバ経由で表示してください。</small>");
-      $("#sum").textContent = "エラー";
-      return;
+      D = await loadData(bust);
+      srcNote = "";
+    }catch(err){
+      try{
+        const r = await fetch("data.json");
+        if (!r.ok) throw err;
+        D = await r.json();
+        srcNote = "シートに接続できないため同梱データを表示しています";
+      }catch(_){
+        showMsg("データを読み込めませんでした。<br><small>" + esc(err.message) +
+          "</small><br><br><small>file:// で開いていませんか。<br>HTTPサーバ経由で表示してください。</small>");
+        $("#sum").textContent = "エラー";
+        return;
+      }
     }
+    boot();
+  } finally {
+    loading = false;
+    $("#reload").disabled = false;
   }
-  boot();
 }
-start(false);
 
 function boot(){
   byId.clear(); cellMap.clear();
-  charChips.length = 0; axisChips.length = 0;
+  charChips.length = 0; filterControls.length = 0;
   groups.proj.clear(); groups.gen.clear();
   $("#rProj").innerHTML = '<span class="flab">プロジェクト</span>';
   $("#rGen").innerHTML  = '<span class="flab">期生</span>';
   $("#rChar").innerHTML = '<span class="flab">キャラ</span>';
   $("#rAxes").innerHTML = "";
+  $("#rFlags").innerHTML = '<span class="flab">呼称</span>';
+  $("#rCells").innerHTML = '<span class="flab">記録の状態</span>';
   const notes = (D.warn || []).concat(srcNote ? [srcNote] : []);
   $("#warn").innerHTML = notes.length
     ? '<span class="flab">注意</span><span class="wtx">' +
@@ -322,7 +136,7 @@ function boot(){
 
   D.chars.forEach(c => byId.set(c.id, c));
   D.cells.forEach(c => {
-    cellMap.set(c.f + ":" + c.t, c);
+    cellMap.set(cellKey(c.f, c.t), c);
     (c.a || []).forEach(a => {
       a._k = a.k || norm(a.l);
       const h = toHira(a._k);
@@ -331,16 +145,22 @@ function boot(){
       if (a.x) for (const k in a.x) a.x[k].forEach(v => a._x.push((k + ":" + v).replace(/\|/g, "／")));
     });
   });
-  // If the previous filter doesn't exist in the current axis, discard it. This prevents a broken state from persisting in the URL.
-  const valid = new Set(Object.values(D.axes || {}).map(v => v.axis + ":" + v.label));
-  if (valid.size) [...selAxis.keys()].forEach(k => { if (!valid.has(k)) selAxis.delete(k); });
 
   buildChips();
-  buildAxisChips();
+  buildFilters();
+  const options = '<option value="">全員</option>' + D.chars.map(c =>
+    '<option value="' + esc(c.id) + '">' + esc((c.emoji ? c.emoji + " " : "") + c.name) + '</option>').join("");
+  $("#fromPerson").innerHTML = options;
+  $("#toPerson").innerHTML = options;
   if (!booted){ restore(); booted = true; }
-  renderMatrix();
+  const validAxes = new Set(Object.values(D.axes || {}).map(v => v.axis + ":" + v.label));
+  for (const key of selAxis.keys()) if (!validAxes.has(key)) selAxis.delete(key);
+  for (const id of hidden) if (!byId.has(id)) hidden.delete(id);
+  if (!byId.has(fromPerson)) fromPerson = "";
+  if (!byId.has(toPerson)) toPerson = "";
+  $("#sheet").close();
+  matrixDirty = true;
   apply();
-  $("#msg").style.display = "none";
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(()=>{});
 }
 
@@ -352,8 +172,7 @@ function tokenHTML(a){
   // "旧" is not displayed because it would be redundant with the strikethrough.
   const notes = (a.n || []).filter(x => x !== "旧");
   if (notes.length) h += '<span class="nt">(' + esc(notes.join("、")) + ")</span>";
-  const ax = [];
-  if (a.x) for (const k in a.x) a.x[k].forEach(v => ax.push((k + ":" + v).replace(/\|/g, "／")));
+  const ax = a._x;
   return '<span class="tk' + (rt ? " rt" : "") + '" data-k="' + esc(a._k) + '"' +
     (a._kh ? ' data-kh="' + esc(a._kh) + '"' : "") +
     (g.length ? ' data-g="' + g.join(" ") + '"' : "") +
@@ -361,7 +180,7 @@ function tokenHTML(a){
 }
 
 function cellHTML(f, t){
-  const c = cellMap.get(f + ":" + t);
+  const c = cellMap.get(cellKey(f, t));
   if (!c) return "";
   let out = "";
   if (c.s) out += '<i class="st ' + c.s + (c.s === "unsure" ? " u" : "") + '">' +
@@ -379,27 +198,28 @@ function cellHTML(f, t){
 const dispName = c => (useShort && c.abbr) ? c.abbr : c.name;
 
 function renderMatrix(){
-  const t0 = performance.now();
   const ch = D.chars;
-  let h = '<table id="mx"><thead><tr><th class="cn" style="width:var(--rh)">呼ぶ側 ↓<br>呼ばれる側 →</th>';
+  let h = '<table id="mx"><caption class="sr-only">行が呼ぶ人、列が呼ばれる人です。各セルの詳細ボタンで呼称を確認できます。</caption><thead><tr><th class="cn" style="width:var(--rh)">呼ぶ側 ↓<br>呼ばれる側 →</th>';
   for (const c of ch)
-    h += '<th data-c="' + c.id + '" style="width:var(--cw)"><div class="clip">' +
+    h += '<th scope="col" data-c="' + esc(c.id) + '" style="width:var(--cw)"><div class="clip">' +
          (c.emoji ? esc(c.emoji) + " " : "") + esc(dispName(c)) + "</div></th>";
   h += "</tr></thead><tbody>";
   for (const r of ch){
-    h += '<tr data-r="' + r.id + '"><th><div class="clip">' +
+    h += '<tr data-r="' + esc(r.id) + '"><th scope="row"><div class="clip">' +
          (r.emoji ? esc(r.emoji) + " " : "") + esc(dispName(r)) + "</div></th>";
     for (const c of ch){
-      const cell = cellMap.get(r.id + ":" + c.id);
+      const cell = cellMap.get(cellKey(r.id, c.id));
       h += "<td" + (r.id === c.id ? ' class="dg"' : "") +
-           ' data-c="' + c.id + '" data-r="' + r.id + '"' +
+           ' data-c="' + esc(c.id) + '" data-r="' + esc(r.id) + '"' +
            (cell && cell.s ? ' data-s="' + cell.s + '"' : "") +
-           '><div class="clip">' + cellHTML(r.id, c.id) + "</div></td>";
+           '><div class="clip">' + cellHTML(r.id, c.id) + '</div>' +
+           '<button class="cell-detail" aria-label="' + esc(r.name + ' → ' + c.name + ' の詳細') + '">' +
+           (cell ? '詳細を見る' : '未調査') + '</button></td>';
     }
     h += "</tr>";
   }
   $("#scroll").innerHTML = h + "</tbody></table>";
-  renderMatrix.ms = Math.round(performance.now() - t0);
+  matrixDirty = false;
 }
 
 /* ================= Chips ================= */
@@ -433,98 +253,63 @@ function buildChips(){
 }
 const charChips = [];
 
-function buildAxisChips(){
+function addFilter(row, label, key, selection){
+  const wrap = document.createElement("label");
+  wrap.className = "filter-field";
+  const text = document.createElement("span");
+  text.textContent = label;
+  const control = document.createElement("select");
+  control.innerHTML = '<option value="">指定なし</option><option value="only">限定</option><option value="not">除外</option>';
+  control.onchange = () => {
+    if (control.value) selection.set(key, control.value); else selection.delete(key);
+    apply();
+  };
+  wrap.appendChild(text); wrap.appendChild(control); row.appendChild(wrap);
+  filterControls.push({control, wrap, selection, key});
+}
+
+function buildFilters(){
+  for (const [key, label] of Object.entries(FLAG_LABEL))
+    addFilter($("#rFlags"), label + (FLAG_MARK[key] ? " " + FLAG_MARK[key] : ""), key, selFlag);
+  for (const [key, label] of Object.entries(STATE_LABEL)) addFilter($("#rCells"), label, key, selCell);
   const byAxis = new Map();
-  for (const tag in (D.axes || {})) {
-    const {axis, label} = D.axes[tag];
+  for (const {axis, label} of Object.values(D.axes || {})) {
     if (!byAxis.has(axis)) byAxis.set(axis, new Set());
     byAxis.get(axis).add(label);
   }
-  const wrap = $("#rAxes");
   for (const [axis, labels] of byAxis){
     const row = document.createElement("div");
     row.className = "frow";
     row.innerHTML = '<span class="flab">' + esc(axis) + "</span>";
-    [...labels].sort().forEach(v => {
-      const key = axis + ":" + v;
-      const b = document.createElement("button");
-      b.className = "chip mini"; b.textContent = v;
-      b.onclick = () => { cycle(selAxis, key); apply(); };
-      b._axis = key; row.appendChild(b); axisChips.push(b);
-    });
-    wrap.appendChild(row);
+    for (const value of [...labels].sort()) addFilter(row, value, axis + ":" + value, selAxis);
+    $("#rAxes").appendChild(row);
   }
-}
-const axisChips = [];
-
-/* ================= Determining which tokens/cells survive =================
-   Since CSS alone cannot determine if "no valid tokens remain in a row," this part is handled on the data side.
-   Because it doesn't touch the DOM, iterating through 10,000 items only takes a few milliseconds. */
-function makeMatcher(q, hira){
-  const onlyF = [], notF = [], onlyX = [], notX = [];
-  selFlag.forEach((v, k) => (v === "only" ? onlyF : notF).push(k));
-  selAxis.forEach((v, k) => (v === "only" ? onlyX : notX).push(k));
-  const hasOnly = onlyF.length + onlyX.length > 0;
-
-  const tokenOK = a => {
-    const g = a.g || [], x = a._x;
-    for (const k of notF) if (g.includes(k)) return false;
-    for (const k of notX) if (x.includes(k)) return false;
-    if (hasOnly){
-      let ok = false;
-      for (const k of onlyF) if (g.includes(k)) { ok = true; break; }
-      if (!ok) for (const k of onlyX) if (x.includes(k)) { ok = true; break; }
-      if (!ok) return false;
-    }
-    if (!q) return true;
-    if (a._k.includes(q)) return true;
-    return !!(hira && a._kh && a._kh.includes(q));
-  };
-
-  const cellOnly = [], cellNot = [];
-  selCell.forEach((v, k) => (v === "only" ? cellOnly : cellNot).push(k));
-  // * Cells marked with "※" or those that are invalid do not have a designation, so they are considered empty when filtering by designation.
-  const tokenFilterOn = hasOnly || notF.length > 0 || notX.length > 0 || !!q;
-  const cellOK = c => {
-    const apps = c.a || [];
-    // State restriction is applied on a per-cell basis. Even if there are notes, if a designation exists, proceed to the designation-side evaluation.
-    if (cellOnly.length && !(c.s && cellOnly.includes(c.s))) return false;
-    if (c.s && cellNot.includes(c.s) && !apps.length) return false;
-    if (apps.length) return apps.some(tokenOK);
-    return !!c.s && !tokenFilterOn;
-  };
-  return {tokenOK, cellOK, cellOnly, cellNot, onlyF, notF, onlyX, notX};
-}
-
-/* Alternately remove rows and columns until a fixed point is reached. Note that removing one may cause the other to become empty. */
-function collapse(m, seed){
-  const pairs = D.cells.filter(m.cellOK).map(c => [c.f, c.t]);
-  let rows = new Set(seed), cols = new Set(seed);
-  for (let i = 0; i < 12; i++){
-    const nr = new Set(), nc = new Set();
-    for (const [f, t] of pairs) if (rows.has(f) && cols.has(t)){ nr.add(f); nc.add(t); }
-    if (nr.size === rows.size && nc.size === cols.size) break;
-    rows = nr; cols = nc;
-  }
-  return {rows, cols};
 }
 
 /* ================= Applying Filter (Just rewriting a single CSS sheet) ================= */
 function apply(){
+  if (!D) return;
+  if (view === "matrix" && matrixDirty) renderMatrix();
   const rules = [];
 
   const raw = $("#q").value.trim();
   // If input in Hiragana, ignore the distinction between different Kana types; if input in Katakana or half-width Katakana, match them as-is.
   const hira = hasHira(raw);
   const q = hira ? normH(raw) : norm(raw);
-  const m = makeMatcher(q, hira);
+  const m = makeMatcher(q, hira, {selFlag, selAxis, selCell});
   const seed = D.chars.filter(c => !hidden.has(c.id)).map(c => c.id);
-  const keep = autoHide ? collapse(m, seed) : {rows:new Set(seed), cols:new Set(seed)};
+  const rowSeed = seed.filter(id => !fromPerson || id === fromPerson);
+  const colSeed = seed.filter(id => !toPerson || id === toPerson);
+  const keep = autoHide ? collapse(D.cells, m, rowSeed, colSeed) : {rows:new Set(rowSeed), cols:new Set(colSeed)};
+  activeMatcher = m;
+  results = matchingCells(D.cells, m, keep.rows, keep.cols);
+  hitIndex = -1; listPage = 0;
+  document.querySelectorAll(".search-current, .axis-current").forEach(el => el.classList.remove("search-current", "axis-current"));
 
   D.chars.forEach(c => {
-    if (!keep.rows.has(c.id)) rules.push('tr[data-r="' + c.id + '"]{display:none}');
+    if (!keep.rows.has(c.id)) rules.push('tr[data-r="' + attr(c.id) + '"]{display:none}');
     if (!keep.cols.has(c.id))
-      rules.push('th[data-c="' + c.id + '"],td[data-c="' + c.id + '"]{display:none}');
+      rules.push('th[data-c="' + attr(c.id) + '"],td[data-c="' + attr(c.id) + '"]{display:none}');
   });
   const supp = mode === "hide" ? "display:none" : "opacity:.2";
 
@@ -550,19 +335,21 @@ function apply(){
   if (tokOnly.length)
     rules.push(".tk" + tokOnly.map(x => ":not(" + x + ")").join("") + "{" + supp + "}");
 
-  let hits = 0;
+  const hits = results.reduce((sum, c) => sum + (c.a || []).filter(m.tokenOK).length, 0);
   if (q){
-    const v = q.replace(/["\\]/g, "\\$&");
+    const v = attr(q);
     const attrs = hira ? ['[data-k*="' + v + '"]', '[data-kh*="' + v + '"]']
                        : ['[data-k*="' + v + '"]'];
-    const sel = attrs.map(a => ".tk" + a).join(",");
-    rules.push(sel + "{background:var(--hit);border-radius:3px}");
-    rules.push(".tk" + attrs.map(a => ":not(" + a + ")").join("") + "{opacity:.15}");
-    hits = document.querySelectorAll(sel).length;
+    rules.push(attrs.map(a => ".tk" + a).join(",") + "{background:var(--hit);border-radius:3px}");
+    rules.push(".tk" + attrs.map(a => ":not(" + a + ")").join("") + "{display:none}");
+    rules.push("td .st, td .bd{display:none}");
   }
   $("#filter").textContent = rules.join("\n");
-  $("#qn").textContent = q ? hits + "件" : "";
   $("#qx").hidden = !q;
+  $("#searchNav").hidden = !q;
+  $("#prevHit").disabled = $("#nextHit").disabled = !results.length;
+  $("#qn").textContent = results.length + "セル";
+  $("#resultSummary").textContent = q ? "検索結果 " + hits + "件" : hits + "件の呼称・" + results.length + "組";
 
   const tbl = $("#mx");
   if (tbl) tbl.style.width = (104 + keep.cols.size * CW[cw]) + "px";
@@ -573,57 +360,76 @@ function apply(){
   charChips.forEach(b => {
     const on = b._ids.filter(i => !hidden.has(i)).length;
     b.dataset.s = on === 0 ? "off" : on === b._ids.length ? "on" : "part";
+    b.setAttribute("aria-pressed", on === 0 ? "false" : on === b._ids.length ? "true" : "mixed");
   });
-  const paint = (b, v) => {
-    b.dataset.s = v === "only" ? "on" : "";
-    b.classList.toggle("off", v === "not");
-  };
-  axisChips.forEach(b => paint(b, selAxis.get(b._axis)));
-  document.querySelectorAll("[data-cell]").forEach(b => paint(b, selCell.get(b.dataset.cell)));
-  document.querySelectorAll("[data-flag]").forEach(b => paint(b, selFlag.get(b.dataset.flag)));
-  $("#bAuto").classList.toggle("off", !autoHide);
-  $("#bAuto").dataset.s = autoHide ? "on" : "";
-  $("#bMode").textContent = mode === "hide" ? "除外を隠す" : "除外を薄く";
-  $("#bClip").textContent = clip ? clip + "行で切る" : "行の制限なし";
-  $("#bCW").textContent   = "列幅 " + {narrow:"狭", normal:"標準", wide:"広"}[cw];
-  const anyAbbr = D.chars.some(c => c.abbr);
-  $("#bShort").textContent = "見出し " + (useShort ? "略称" : "フルネーム");
-  $("#bShort").hidden = !anyAbbr;
+  filterControls.forEach(({control, wrap, selection, key}) => {
+    control.value = selection.get(key) || "";
+    wrap.dataset.state = control.value;
+  });
+  $("#bAuto").value = autoHide ? "on" : "off";
+  $("#bMode").value = mode;
+  $("#bClip").value = String(clip);
+  $("#bCW").value = cw;
+  $("#bShort").value = useShort ? "short" : "full";
+  $("#shortSetting").hidden = !D.chars.some(c => c.abbr);
+  $("#fromPerson").value = fromPerson;
+  $("#toPerson").value = toPerson;
+  $("#rangeCount").textContent = seed.length + "/" + D.chars.length + "人";
+  $("#viewMatrix").setAttribute("aria-pressed", String(view === "matrix"));
+  $("#viewList").setAttribute("aria-pressed", String(view === "list"));
+  $("#scroll").hidden = view !== "matrix";
+  $("#list").hidden = view !== "list";
+  $("#pagination").hidden = view !== "list" || results.length <= PAGE_SIZE;
+  if (view === "list") { renderList(); $("#list").scrollTop = 0; }
+  updateClippingHints();
 
   const only = [], not = [];
   const push = (v, kind, key, label) => (v === "only" ? only : not).push({kind, key, label});
   selCell.forEach((v, k) => push(v, "cell", k, STATE_LABEL[k].replace("※ ", "")));
   selFlag.forEach((v, k) => push(v, "flag", k, FLAG_LABEL[k]));
-  selAxis.forEach((v, k) => push(v, "axis", k, k.split(":")[1]));
+  selAxis.forEach((v, k) => push(v, "axis", k, k.slice(k.indexOf(":") + 1)));
   const part = (arr, word) => {
     if (!arr.length) return "";
-    const shown = arr.slice(0, 3);
+    const shown = arr;
     const chips = shown.map(item =>
       '<button class="sum-chip" type="button" data-clear-filter data-kind="' + esc(item.kind) + '" data-key="' + esc(item.key) + '" title="' + esc(word) + 'から外す">' +
       esc(item.label) + '<span class="x">✕</span></button>').join("");
-    return '　' + word + ' ' + chips + (arr.length > 3 ? ' <span class="sum-more">…</span>' : '');
+    return '<span class="condition-group">' + word + ' ' + chips + '</span>';
   };
-  $("#sum").innerHTML = "キャラ <b>" + seed.length + "</b>/" + D.chars.length +
-    part(only, "限定") + part(not, "除外") +
-    (only.length || not.length ? "" : "　絞り込みなし");
-  $("#dim").textContent = keep.rows.size + "×" + keep.cols.size +
-    (renderMatrix.ms ? " / " + renderMatrix.ms + "ms" : "");
-  const empty = !keep.rows.size || !keep.cols.size;
+  const personName = id => id ? byId.get(id)?.name || "全員" : "全員";
+  $("#sum").innerHTML = '<span class="people-summary">' + esc(personName(fromPerson)) + ' → ' + esc(personName(toPerson)) + '</span>' +
+    (hidden.size ? '<span class="range-summary">人物範囲 ' + seed.length + '/' + D.chars.length + '人</span>' : "") +
+    part(only, "限定") + part(not, "除外");
+  const filterCount = only.length + not.length + (hidden.size ? 1 : 0);
+  $("#filterCount").textContent = filterCount ? "(" + filterCount + ")" : "";
+  $("#dim").textContent = view === "matrix" ? keep.rows.size + "行 × " + keep.cols.size + "列" : "";
+  const empty = !keep.rows.size || !keep.cols.size || ((!!q || view === "list") && !results.length);
   $("#msg").style.display = empty ? "grid" : "none";
   if (empty) $("#msg").innerHTML = seed.length
-    ? "条件に合う呼称がありません。<br><small>絞り込みを緩めてください。</small>"
-    : "表示するキャラクターがありません。";
+    ? '条件に合う記録がありません。<br><small>人物や検索・絞り込み条件を変えてください。</small><button class="tool-button" data-reset>条件をリセット</button>'
+    : '表示する人物が選ばれていません。<button class="tool-button" data-reset>全員を表示</button>';
   save();
 }
 
 /* ================= Operations ================= */
-$("#strip").onclick = e => {
-  if (e.target.closest("[data-clear-filter]")) return;
-  const open = !$("#panel").classList.contains("open");
-  $("#panel").classList.toggle("open", open);
-  $("#strip").classList.toggle("open", open);
-  $("#grip").classList.toggle("open", open);
-};
+function togglePanel(kind){
+  const filters = kind === "filters" && !$("#panel").classList.contains("open");
+  const settings = kind === "settings" && $("#settings").hidden;
+  $("#panel").classList.toggle("open", filters);
+  $("#grip").classList.toggle("open", filters);
+  $("#settings").hidden = !settings;
+  $("#filterToggle").setAttribute("aria-expanded", String(filters));
+  $("#settingsToggle").setAttribute("aria-expanded", String(settings));
+}
+$("#filterToggle").onclick = () => togglePanel("filters");
+$("#settingsToggle").onclick = () => togglePanel("settings");
+$("#closeFilters").onclick = () => { togglePanel(null); $("#filterToggle").focus(); };
+$("#closeSettings").onclick = () => { togglePanel(null); $("#settingsToggle").focus(); };
+document.addEventListener("keydown", e => {
+  if (e.key !== "Escape" || $("#sheet").open) return;
+  if ($("#panel").classList.contains("open")) $("#closeFilters").click();
+  else if (!$("#settings").hidden) $("#closeSettings").click();
+});
 $("#sum").onclick = e => {
   const btn = e.target.closest("[data-clear-filter]");
   if (!btn) return;
@@ -661,45 +467,64 @@ $("#sum").onclick = e => {
   window._setPanelH = setH;
 })();
 $("#bAll").onclick  = () => { hidden.clear(); apply(); };
-$("#bNone").onclick = () => { D.chars.forEach(c => hidden.add(c.id)); apply(); };
-$("#bReset").onclick = () => {
+$("#bNone").onclick = () => { if (!D) return; D.chars.forEach(c => hidden.add(c.id)); apply(); };
+function resetFilters(){
   hidden.clear(); selCell.clear(); selFlag.clear(); selAxis.clear();
+  fromPerson = ""; toPerson = "";
   $("#q").value = ""; apply();
-};
+}
+$("#bReset").onclick = resetFilters;
+$("#msg").onclick = e => { if (e.target.closest("[data-reset]")) resetFilters(); };
 $("#reload").onclick = () => start(true);
-$("#bShort").onclick = () => {
-  useShort = !useShort;
-  if (D) renderMatrix();
+$("#fromPerson").onchange = e => { fromPerson = e.target.value; hidden.delete(fromPerson); apply(); };
+$("#toPerson").onchange = e => { toPerson = e.target.value; hidden.delete(toPerson); apply(); };
+$("#swapPeople").onclick = () => { [fromPerson, toPerson] = [toPerson, fromPerson]; apply(); };
+$("#viewMatrix").onclick = () => { view = "matrix"; apply(); };
+$("#viewList").onclick = () => { view = "list"; apply(); };
+$("#bShort").onchange = e => {
+  useShort = e.target.value === "short";
+  matrixDirty = true;
   apply();
 };
-$("#bAuto").onclick = () => { autoHide = !autoHide; apply(); };
-$("#bMode").onclick = () => { mode = mode === "hide" ? "dim" : "hide"; apply(); };
-$("#bClip").onclick = () => { clip = ({5:3, 3:2, 2:0, 0:5})[clip]; apply(); };
-$("#bCW").onclick   = () => { cw = ({narrow:"normal", normal:"wide", wide:"narrow"})[cw]; apply(); };
-document.querySelectorAll("[data-cell]").forEach(b =>
-  b.onclick = () => { cycle(selCell, b.dataset.cell); apply(); });
-document.querySelectorAll("[data-flag]").forEach(b =>
-  b.onclick = () => { cycle(selFlag, b.dataset.flag); apply(); });
+$("#bAuto").onchange = e => { autoHide = e.target.value === "on"; apply(); };
+$("#bMode").onchange = e => { mode = e.target.value; apply(); };
+$("#bClip").onchange = e => { clip = Number(e.target.value); apply(); };
+$("#bCW").onchange = e => { cw = e.target.value; apply(); };
 
 let qt = null;
 $("#q").oninput = () => { clearTimeout(qt); qt = setTimeout(apply, 120); };
 $("#qx").onclick = () => { $("#q").value = ""; apply(); };
+$("#q").onkeydown = e => {
+  if (e.key === "Enter" && !e.isComposing) {
+    e.preventDefault(); clearTimeout(qt); apply(); moveHit(1);
+  }
+};
+$("#prevHit").onclick = () => moveHit(-1);
+$("#nextHit").onclick = () => moveHit(1);
+const changePage = step => {
+  listPage = Math.max(0, Math.min(Math.ceil(results.length / PAGE_SIZE) - 1, listPage + step));
+  renderList(); $("#list").scrollTop = 0;
+};
+$("#prevPage").onclick = () => changePage(-1);
+$("#nextPage").onclick = () => changePage(1);
 
 /* ---------- Details Sheet ---------- */
-$("#shX").onclick = () => $("#sheet").classList.remove("open");
-$("#scroll").addEventListener("click", e => {
-  const td = e.target.closest("td[data-r]");
-  if (!td) return;
+$("#shX").onclick = () => $("#sheet").close();
+const showDetail = e => {
+  const target = e.target.closest("[data-r][data-c]");
+  if (!target) return;
   document.querySelectorAll("td.sel").forEach(n => n.classList.remove("sel"));
-  td.classList.add("sel");
-  openSheet(td.dataset.r, td.dataset.c);
-});
+  target.classList.add("sel");
+  openSheet(target.dataset.r, target.dataset.c);
+};
+$("#scroll").addEventListener("click", showDetail);
+$("#list").addEventListener("click", showDetail);
 
 function openSheet(f, t){
   const from = byId.get(f), to = byId.get(t);
   $("#shA").textContent = (from.emoji ? from.emoji + " " : "") + from.name;
   $("#shB").textContent = f === t ? "自分（一人称）" : (to.emoji ? to.emoji + " " : "") + to.name;
-  const c = cellMap.get(f + ":" + t);
+  const c = cellMap.get(cellKey(f, t));
   const body = $("#shBody");
   const note = (c && c.s)
     ? (c.s === "unsure"
@@ -725,28 +550,48 @@ function openSheet(f, t){
         '</span><span class="f">' + fl + "</span></div>";
     }).join("");
   }
-  $("#sheet").classList.add("open");
+  $("#sheet").showModal();
+  $("#sheet").scrollTop = 0;
 }
 
 /* ---------- Save and Restore State ---------- */
 function save(){
   const s = {h:[...hidden], c:[...selCell], f:[...selFlag], a:[...selAxis],
-             m:mode, l:clip, w:cw, u:autoHide, p:panelH, s:useShort};
-  location.replace("#" + encodeURIComponent(JSON.stringify(s)));
+             m:mode, l:clip, w:cw, u:autoHide, p:panelH, s:useShort,
+             from:fromPerson, to:toPerson, view, q:$("#q").value};
+  const hash = "#" + encodeURIComponent(JSON.stringify(s));
+  if (location.hash !== hash) history.replaceState(null, "", hash);
 }
 function restore(){
   if (!location.hash) return;
   try{
     const s = JSON.parse(decodeURIComponent(location.hash.slice(1)));
-    (s.h || []).forEach(x => hidden.add(x));
-    (s.c || []).forEach(([k, v]) => selCell.set(k, v));
-    (s.f || []).forEach(([k, v]) => selFlag.set(k, v));
-    (s.a || []).forEach(([k, v]) => selAxis.set(k, v));
-    if (s.m) mode = s.m;
-    if (s.l !== undefined) clip = s.l;
-    if (s.w) cw = s.w;
-    if (s.u) autoHide = true;
+    if (!s || typeof s !== "object") return;
+    if (Array.isArray(s.h)) s.h.forEach(x => { if (typeof x === "string") hidden.add(x); });
+    const restoreMap = (entries, target, labels) => {
+      if (!Array.isArray(entries)) return;
+      for (const entry of entries){
+        if (!Array.isArray(entry) || entry.length !== 2) continue;
+        const [k, v] = entry;
+        if (typeof k === "string" && (!labels || Object.hasOwn(labels, k)) &&
+            (v === "only" || v === "not")) target.set(k, v);
+      }
+    };
+    restoreMap(s.c, selCell, STATE_LABEL);
+    restoreMap(s.f, selFlag, FLAG_LABEL);
+    restoreMap(s.a, selAxis);
+    if (["dim", "hide"].includes(s.m)) mode = s.m;
+    if ([0, 2, 3, 5].includes(s.l)) clip = s.l;
+    if (Object.hasOwn(CW, s.w)) cw = s.w;
+    if (s.u === true) autoHide = true;
     if (s.s === false) useShort = false;
-    if (s.p) window._setPanelH(s.p);
+    if (typeof s.from === "string") fromPerson = s.from;
+    if (typeof s.to === "string") toPerson = s.to;
+    if (["matrix", "list"].includes(s.view)) view = s.view;
+    if (typeof s.q === "string") $("#q").value = s.q;
+    if (Number.isFinite(s.p) && s.p > 0) window._setPanelH(s.p);
   }catch(e){}
 }
+
+// Start after all UI state and event handlers have been initialized.
+start(false);

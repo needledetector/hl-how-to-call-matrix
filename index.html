@@ -10,74 +10,85 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-
-<div class="bar">
-  <div class="ttl">呼称表</div>
-  <button class="rl" id="reload" title="シートから読み直す">↻</button>
+<header class="bar">
+  <h1 class="ttl">呼称表</h1>
   <div class="search">
-    <input id="q" type="search" placeholder="呼称を検索" autocomplete="off" enterkeyhint="search">
-    <span class="n" id="qn"></span>
-    <button class="x" id="qx" aria-label="消す" hidden>✕</button>
+    <input id="q" type="search" placeholder="呼称を検索" aria-label="呼称を検索" autocomplete="off" enterkeyhint="search">
+    <button class="x" id="qx" aria-label="検索をクリア" hidden>✕</button>
   </div>
+  <button class="rl" id="reload" title="シートから読み直す" aria-label="データを再読み込み">↻</button>
+</header>
+
+<section class="people" aria-label="調べる人物">
+  <label class="person-field"><span>呼ぶ人 <small>行</small></span><select id="fromPerson"><option value="">全員</option></select></label>
+  <button id="swapPeople" class="swap" aria-label="呼ぶ人と呼ばれる人を入れ替える" title="呼ぶ人と呼ばれる人を入れ替える">⇄</button>
+  <label class="person-field"><span>呼ばれる人 <small>列</small></span><select id="toPerson"><option value="">全員</option></select></label>
+</section>
+
+<div class="toolbar">
+  <div class="view-switch" role="group" aria-label="表示形式">
+    <button id="viewMatrix" aria-pressed="true">表</button><button id="viewList" aria-pressed="false">一覧</button>
+  </div>
+  <button id="filterToggle" class="tool-button" aria-expanded="false" aria-controls="panel">絞り込み <span id="filterCount"></span><span id="warnDot" hidden> ⚠</span></button>
+  <button id="settingsToggle" class="tool-button" aria-expanded="false" aria-controls="settings">表示設定</button>
+  <button id="bReset" class="text-button">条件をリセット</button>
 </div>
 
-<div class="strip" id="strip">
-  <span class="cav">▶</span>
-  <span class="sum" id="sum">読み込み中…</span>
-  <span class="wdot" id="warnDot" hidden>⚠</span>
+<section class="panel" id="panel" aria-label="絞り込み">
+  <div class="panel-heading"><h2>絞り込み</h2><button id="closeFilters" class="text-button" aria-label="絞り込みを閉じる">完了 ✕</button></div>
+  <div class="frow" id="warn" style="display:none"></div>
+  <p class="panel-intro">各条件の「限定」「除外」を選べます。呼称・注記の限定は、どれかに一致すれば表示します。</p>
+  <div class="frow" id="rFlags"><span class="flab">呼称</span></div>
+  <div class="frow" id="rCells"><span class="flab">記録の状態</span></div>
+  <div id="rAxes"></div>
+  <details class="people-range">
+    <summary>両側の人物範囲をまとめて選ぶ <span id="rangeCount"></span></summary>
+    <p class="panel-intro">選択した人物を、呼ぶ側・呼ばれる側の両方に表示します。</p>
+    <div class="frow"><button class="chip act" id="bAll">全員を選択</button><button class="chip act" id="bNone">選択を解除</button></div>
+    <div class="frow" id="rProj"><span class="flab">グループ</span></div>
+    <div class="frow" id="rGen"><span class="flab">期生</span></div>
+    <div class="frow" id="rChar"><span class="flab">人物</span></div>
+  </details>
+</section>
+<div class="grip" id="grip" role="separator" aria-label="絞り込みパネルの高さを変える"></div>
+
+<section class="settings" id="settings" aria-label="表示設定" hidden>
+  <div class="panel-heading"><h2>表示設定</h2><button id="closeSettings" class="text-button" aria-label="表示設定を閉じる">完了 ✕</button></div>
+  <label>表の空行・空列 <select id="bAuto"><option value="off">そのまま表示</option><option value="on">隠す</option></select></label>
+  <label>除外した呼称 <select id="bMode"><option value="hide">隠す</option><option value="dim">薄く残す（表のみ）</option></select></label>
+  <label>セルの行数 <select id="bClip"><option value="5">5行</option><option value="3">3行</option><option value="2">2行</option><option value="0">すべて表示</option></select></label>
+  <label>列幅 <select id="bCW"><option value="narrow">狭い</option><option value="normal">標準</option><option value="wide">広い</option></select></label>
+  <label id="shortSetting">見出し <select id="bShort"><option value="short">略称</option><option value="full">フルネーム</option></select></label>
+</section>
+
+<div class="active-filters" id="sum" aria-label="現在の条件">読み込み中…</div>
+<div class="results-bar">
+  <span id="resultSummary" role="status" aria-live="polite"></span>
+  <div class="search-nav" id="searchNav" hidden>
+    <span id="qn"></span>
+    <button id="prevHit" aria-label="前の一致セルへ" title="前の一致セルへ">↑</button>
+    <button id="nextHit" aria-label="次の一致セルへ" title="次の一致セルへ">↓</button>
+  </div>
   <span class="dim" id="dim"></span>
 </div>
-
-<div class="panel" id="panel">
-  <div class="frow" id="warn" style="display:none"></div>
-  <div class="frow">
-    <span class="flab">表示</span>
-    <button class="chip act" id="bAll">全キャラ表示</button>
-    <button class="chip act" id="bNone">全解除</button>
-    <button class="chip act" id="bReset">絞り込みリセット</button>
-    <button class="chip act" id="bAuto">空の行列を隠す</button>
-    <button class="chip act" id="bMode">除外を薄く</button>
-    <button class="chip act" id="bClip">5行で切る</button>
-    <button class="chip act" id="bCW">列幅 標準</button>
-    <button class="chip act" id="bShort">見出し 略称</button>
-  </div>
-  <div class="frow" id="rProj"><span class="flab">プロジェクト</span></div>
-  <div class="frow" id="rGen"><span class="flab">期生</span></div>
-  <div class="frow" id="rChar"><span class="flab">キャラ</span></div>
-  <div class="frow">
-    <span class="flab">セル</span>
-    <button class="chip mini" data-cell="unsure">未確認 ※</button>
-    <button class="chip mini" data-cell="na">離籍・未デビュー</button>
-    <button class="chip mini" data-cell="omitted">省略</button>
-  </div>
-  <div class="frow">
-    <span class="flab">呼称</span>
-    <button class="chip mini" data-flag="main">基本 ◎</button>
-    <button class="chip mini" data-flag="rare">稀 *</button>
-    <button class="chip mini" data-flag="third">三人称 +</button>
-    <button class="chip mini" data-flag="egosa">エゴサ ☆</button>
-    <button class="chip mini" data-flag="retired">使用終了 ←</button>
-  </div>
-  <div id="rAxes"></div>
-  <div class="frow"><span class="flab"></span><span class="hint">チップは タップごとに
-    <b>限定</b> → <s>除外</s> → 解除 と切り替わります</span></div>
-</div>
-<div class="grip" id="grip" role="separator" aria-label="パネルの高さを変える"></div>
-
-<div class="shell">
-  <div class="scroll" id="scroll"></div>
+<main class="shell">
+  <div class="scroll" id="scroll" aria-label="呼称の表"></div>
+  <div class="list-view" id="list" aria-label="呼称の一覧" hidden></div>
   <div class="msg" id="msg">読み込み中…</div>
+</main>
+<div class="pagination" id="pagination" hidden>
+  <button id="prevPage">前へ</button><span id="pageInfo"></span><button id="nextPage">次へ</button>
 </div>
 
-<div class="sheet" id="sheet">
+<dialog class="sheet" id="sheet" aria-labelledby="detailTitle">
   <div class="sh-h">
-    <span class="a" id="shA"></span><span class="ar">→</span><span class="a" id="shB"></span>
-    <button class="x" id="shX" aria-label="閉じる">✕</button>
+    <h2 id="detailTitle"><span class="a" id="shA"></span><span class="ar"> → </span><span class="a" id="shB"></span></h2>
+    <button class="x" id="shX" aria-label="詳細を閉じる" autofocus>✕</button>
   </div>
   <div id="shBody"></div>
-</div>
+</dialog>
 
 <style id="filter"></style>
-<script src="app.js"></script>
+<script type="module" src="app.js"></script>
 </body>
 </html>

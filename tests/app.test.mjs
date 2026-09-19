@@ -40,6 +40,8 @@ test('initialization renders escaped IDs and ignores invalid or stale URL filter
   assert.deepEqual(saved.a, []);
   assert.equal(saved.w, 'normal');
   assert.equal(saved.l, 5);
+  assert.equal(saved.u, true);
+  assert.equal(saved.s, false);
   assert.equal(node('#reload').disabled, false);
 });
 
@@ -63,6 +65,26 @@ test('controls work before data loads and repeated reloads share the active load
   resolve({chars: [], cells: [], axes: {}});
   await context.started;
   assert.equal(node('#reload').disabled, false);
+});
+
+test('explicit saved display settings override the new defaults', async () => {
+  const {context, location} = app('#' + encodeURIComponent(JSON.stringify({u:false, s:true})));
+  await context.started;
+  const saved = JSON.parse(decodeURIComponent(location.hash.slice(1)));
+  assert.equal(saved.u, false);
+  assert.equal(saved.s, true);
+});
+
+test('display-only changes reuse matching results and a changed filter recalculates them', async () => {
+  const {context, node} = app();
+  await context.started;
+  const initial = vm.runInContext('matchCache', context);
+  node('#bCW').onchange({target:{value:'wide'}});
+  assert.equal(vm.runInContext('matchCache', context), initial);
+  node('#bShort').onchange({target:{value:'short'}});
+  assert.equal(vm.runInContext('matchCache', context), initial);
+  node('#bNone').onclick();
+  assert.notEqual(vm.runInContext('matchCache', context), initial);
 });
 
 test('table scale restores from URL and can be reset without clearing filters', async () => {

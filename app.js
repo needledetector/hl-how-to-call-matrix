@@ -1,5 +1,5 @@
 import {loadData} from "./data.mjs";
-import {norm, normH, toHira, hasHira, makeMatcher, collapse, matchingCells} from "./search.mjs";
+import {norm, normH, toHira, hasHira, makeMatcher, matchingCells} from "./search.mjs";
 
 "use strict";
 const $ = s => document.querySelector(s);
@@ -19,7 +19,22 @@ const selFlag = new Map();     // Name flag       → "only" | "not"
 const selAxis = new Map();     // "Axis:Value"    → "only" | "not"
 const cellKey = (from, to) => JSON.stringify([from, to]);
 const attr = s => String(s).replace(/["\\]/g, "\\$&");   // For attribute selector strings
-let mode = "hide", clip = 5, cw = "normal", autoHide = false, panelH = null, useShort = true;
+let mode = "hide", clip = 5, cw = "normal", autoHide = true, panelH = null, useShort = false;
+let theme = "light", matchCache = null;
+try { if (localStorage.getItem("kosho-theme") === "dark") theme = "dark"; } catch (_) {}
+
+function paintTheme(){
+  document.documentElement.dataset.theme = theme;
+  $("#themeToggle").textContent = theme === "dark" ? "☾ ダーク" : "☀ ライト";
+  $("#themeToggle").setAttribute("aria-pressed", String(theme === "dark"));
+  $('meta[name="theme-color"]')?.setAttribute("content", theme === "dark" ? "#171c24" : "#ffffff");
+}
+$("#themeToggle").onclick = () => {
+  theme = theme === "dark" ? "light" : "dark";
+  paintTheme();
+  try { localStorage.setItem("kosho-theme", theme); } catch (_) {}
+};
+paintTheme();
 
 let fromPerson = "", toPerson = "";
 let view = window.matchMedia?.("(max-width: 640px)").matches ? "list" : "matrix";
@@ -138,6 +153,7 @@ async function start(bust){
 }
 
 function boot(){
+  matchCache = null;
   byId.clear(); cellMap.clear();
   charChips.length = 0; filterControls.length = 0;
   groups.proj.clear(); groups.gen.clear();
@@ -221,11 +237,11 @@ function renderMatrix(){
   const ch = D.chars;
   let h = '<table id="mx"><caption class="sr-only">行が呼ぶ人、列が呼ばれる人です。各セルの詳細ボタンで呼称を確認できます。</caption><thead><tr><th class="cn" style="width:var(--rh)">呼ぶ側 ↓<br>呼ばれる側 →</th>';
   for (const c of ch)
-    h += '<th scope="col" data-c="' + esc(c.id) + '" style="width:var(--cw)"><div class="clip">' +
+    h += '<th scope="col" data-person="' + esc(c.id) + '" data-c="' + esc(c.id) + '" style="width:var(--cw)"><div class="clip">' +
          (c.emoji ? esc(c.emoji) + " " : "") + esc(dispName(c)) + "</div></th>";
   h += "</tr></thead><tbody>";
   for (const r of ch){
-    h += '<tr data-r="' + esc(r.id) + '"><th scope="row"><div class="clip">' +
+    h += '<tr data-r="' + esc(r.id) + '"><th scope="row" data-person="' + esc(r.id) + '"><div class="clip">' +
          (r.emoji ? esc(r.emoji) + " " : "") + esc(dispName(r)) + "</div></th>";
     for (const c of ch){
       const cell = cellMap.get(cellKey(r.id, c.id));
@@ -317,13 +333,22 @@ function apply(){
   // If input in Hiragana, ignore the distinction between different Kana types; if input in Katakana or half-width Katakana, match them as-is.
   const hira = hasHira(raw);
   const q = hira ? normH(raw) : norm(raw);
-  const m = makeMatcher(q, hira, {selFlag, selAxis, selCell});
   const seed = D.chars.filter(c => !hidden.has(c.id)).map(c => c.id);
   const rowSeed = seed.filter(id => !fromPerson || id === fromPerson);
   const colSeed = seed.filter(id => !toPerson || id === toPerson);
-  const keep = autoHide ? collapse(D.cells, m, rowSeed, colSeed) : {rows:new Set(rowSeed), cols:new Set(colSeed)};
+  const allowed = {rows:new Set(rowSeed), cols:new Set(colSeed)};
+  const matchKey = JSON.stringify([q, hira, fromPerson, toPerson, [...hidden], [...selFlag], [...selAxis], [...selCell]]);
+  if (!matchCache || matchCache.key !== matchKey) {
+    const matcher = makeMatcher(q, hira, {selFlag, selAxis, selCell});
+    const cells = matchingCells(D.cells, matcher, allowed.rows, allowed.cols);
+    let hits = 0;
+    for (const cell of cells) for (const token of cell.a || []) if (matcher.tokenOK(token)) hits++;
+    matchCache = {key:matchKey, matcher, cells, hits};
+  }
+  const m = matchCache.matcher;
   activeMatcher = m;
-  results = matchingCells(D.cells, m, keep.rows, keep.cols);
+  results = matchCache.cells;
+  const keep = autoHide ? {rows:new Set(results.map(c => c.f)), cols:new Set(results.map(c => c.t))} : allowed;
   hitIndex = -1; listPage = 0;
   document.querySelectorAll(".search-current, .axis-current").forEach(el => el.classList.remove("search-current", "axis-current"));
 
@@ -356,7 +381,7 @@ function apply(){
   if (tokOnly.length)
     rules.push(".tk" + tokOnly.map(x => ":not(" + x + ")").join("") + "{" + supp + "}");
 
-  const hits = results.reduce((sum, c) => sum + (c.a || []).filter(m.tokenOK).length, 0);
+  const hits = matchCache.hits;
   if (q){
     const v = attr(q);
     const attrs = hira ? ['[data-k*="' + v + '"]', '[data-kh*="' + v + '"]']
@@ -511,7 +536,11 @@ $("#viewMatrix").onclick = () => { view = "matrix"; apply(); };
 $("#viewList").onclick = () => { view = "list"; apply(); };
 $("#bShort").onchange = e => {
   useShort = e.target.value === "short";
-  matrixDirty = true;
+  // Only the 2N headers change; preserve the N² cells and scroll position.
+  document.querySelectorAll("#mx th[data-person]").forEach(header => {
+    const person = byId.get(header.dataset.person);
+    header.firstElementChild.textContent = (person.emoji ? person.emoji + " " : "") + dispName(person);
+  });
   apply();
 };
 $("#bAuto").onchange = e => { autoHide = e.target.value === "on"; apply(); };
@@ -629,8 +658,8 @@ function restore(){
     if (["dim", "hide"].includes(s.m)) mode = s.m;
     if ([0, 2, 3, 5].includes(s.l)) clip = s.l;
     if (Object.hasOwn(CW, s.w)) cw = s.w;
-    if (s.u === true) autoHide = true;
-    if (s.s === false) useShort = false;
+    if (typeof s.u === "boolean") autoHide = s.u;
+    if (typeof s.s === "boolean") useShort = s.s;
     if (Number.isFinite(s.z) && s.z >= 60 && s.z <= 160) tableZoom = Math.round(s.z / 10) * 10;
     if (typeof s.from === "string") fromPerson = s.from;
     if (typeof s.to === "string") toPerson = s.to;

@@ -14,7 +14,7 @@ function worker() {
   };
   const context = vm.createContext({URL, caches: {
     open: async () => cache,
-    keys: async () => ['kosho-v7', 'kosho-v8', 'kosho-data-v1', 'another-app'],
+    keys: async () => ['kosho-v8', 'kosho-v9', 'kosho-data-v1', 'another-app'],
     delete: async k => deleted.push(k),
   }, self: {location: {origin: 'https://example.test'}, addEventListener: (name, fn) => handlers[name] = fn, clients: {claim() {}}, skipWaiting() {}}, fetch: async () => new Response('fresh')});
   vm.runInContext(source, context);
@@ -46,7 +46,7 @@ test('activation deletes only old app caches', async () => {
   let pending;
   handlers.activate({waitUntil: promise => pending = promise});
   await pending;
-  assert.deepEqual(deleted, ['kosho-v7']);
+  assert.deepEqual(deleted, ['kosho-v8']);
 });
 
 test('failed asset installation does not activate a partial release', async () => {
